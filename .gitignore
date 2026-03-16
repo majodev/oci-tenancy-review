@@ -1,5 +1,6 @@
 .DS_Store
 .codex
+report
 
 oci-cli
 oci_cli_docs

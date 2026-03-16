@@ -66,28 +66,47 @@ TENANCY_OCID="${TENANCY_OCID:-$(
 
 echo "Current tenancy ocid: ${TENANCY_OCID}"
 
-# collect all compartments as: OCID<TAB>NAME (root + subtree)
+# output folder (relative to current working directory)
+rm -rf report
+mkdir report
+
+# collect all compartments as: OCID<TAB>full.path (root + subtree)
 oci iam compartment list \
   --compartment-id "$TENANCY_OCID" \
   --compartment-id-in-subtree true \
   --access-level ANY \
   --include-root \
-  --all > compartments.json
+  --all > report/compartments.json
 
-jq -r '.data[] | [.id, .name] | @tsv' compartments.json > compartment_ids.txt
+jq -r --arg tenancy "$TENANCY_OCID" '
+  .data as $d
+  | ($d | map({key: .id, value: .}) | from_entries) as $m
+  | def full_path($id):
+      if $id == $tenancy then
+        ""
+      else
+        (full_path($m[$id]."compartment-id")) as $p
+        | if $p == "" then $m[$id].name else ($p + "." + $m[$id].name) end
+      end;
+  $d[] | [.id, (if .id == $tenancy then "root" else full_path(.id) end)] | @tsv
+' report/compartments.json > report/compartment_ids_unsorted.txt
+
+# sort by generated path name, but keep root first
+grep $'\troot$' report/compartment_ids_unsorted.txt > report/compartment_ids.txt
+grep -v $'\troot$' report/compartment_ids_unsorted.txt | sort -t $'\t' -k2,2 >> report/compartment_ids.txt
 
 # pull policies per compartment into a single JSON file
-echo "" > policies_all_compartments.jsonl
+echo "" > report/policies_all_compartments.jsonl
 while read -r cid; do
-  cname="$(grep -m1 "^${cid}"$'\t' compartment_ids.txt | cut -f2-)"
+  cname="$(grep -m1 "^${cid}"$'\t' report/compartment_ids.txt | cut -f2-)"
   echo "Getting policies in cid ${cid} ${cname}..."
   oci iam policy list -c "$cid" --all \
     | jq -c --arg cid "$cid" --arg cname "$cname" \
       '.data[] | {compartmentId:$cid, compartmentName:$cname, name:.name, id:.id, timeCreated:."time-created", definedTags:."defined-tags", statements:.statements}' \
-    >> policies_all_compartments.jsonl
-done < <(cut -f1 compartment_ids.txt)
+    >> report/policies_all_compartments.jsonl
+done < <(cut -f1 report/compartment_ids.txt)
 
-jq -s '.' policies_all_compartments.jsonl > policies_all_compartments.json
+jq -s '.' report/policies_all_compartments.jsonl > report/policies_all_compartments.json
 
 # to csv, flattened by policy statement
 jq -r '
@@ -95,7 +114,7 @@ jq -r '
   (.[] as $p | ($p.statements // [])[] |
     [$p.compartmentId, $p.compartmentName, $p.name, ($p.definedTags["Oracle-Tags"]["CreatedBy"] // ""), $p.timeCreated, ., $p.id]
   ) | @csv
-' policies_all_compartments.json > policy_statements.csv
+' report/policies_all_compartments.json > report/policy_statements.csv
 ```
 
 ## 4. Readout + actionable plan 
