@@ -13,6 +13,7 @@ If running in OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/C
 git clone https://github.com/majodev/oci-tenancy-review.git
 cd oci-tenancy-review
 chmod +x ./oci-tenancy-review
+
 ```
 
 ### Set tenancy OCID (required)
@@ -34,6 +35,7 @@ export TENANCY_OCID="${TENANCY_OCID:-$(
     --raw-output
 )}"
 echo "Your tenancy ocid is: '${TENANCY_OCID}'"
+
 ```
 
 #### Option 2: Local ENV
@@ -52,6 +54,7 @@ export TENANCY_OCID="${TENANCY_OCID:-$(
   ' ~/.oci/config
 )}"
 echo "Your tenancy ocid is: '${TENANCY_OCID}'"
+
 ```
 
 #### Option 3: Set manually
@@ -60,6 +63,7 @@ echo "Your tenancy ocid is: '${TENANCY_OCID}'"
 # cat ~/.oci/config
 export TENANCY_OCID="ocid1.tenancy.oc1...."
 echo "Your tenancy ocid is: '${TENANCY_OCID}'"
+
 ```
 
 ## Usage
@@ -71,6 +75,7 @@ echo "Your tenancy ocid is: '${TENANCY_OCID}'"
 # Your reports are now available in the report subfolder
 # If you are within a OCI cloud shell, you may want to archive this folder to easily download it
 tar -czvf report.tar.gz report
+
 ```
 
 If you used OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) to execute the above, you should now be able to download the archived report by navigating to "Cog -> Download" (top right) and targeting this file:
