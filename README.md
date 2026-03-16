@@ -88,12 +88,12 @@ jq -r --arg tenancy "$TENANCY_OCID" '
         (full_path($m[$id]."compartment-id")) as $p
         | if $p == "" then $m[$id].name else ($p + "." + $m[$id].name) end
       end;
-  $d[] | [.id, (if .id == $tenancy then "root" else full_path(.id) end)] | @tsv
-' report/compartments.json > report/compartment_ids_unsorted.txt
-
-# sort by generated path name, but keep root first
-grep $'\troot$' report/compartment_ids_unsorted.txt > report/compartment_ids.txt
-grep -v $'\troot$' report/compartment_ids_unsorted.txt | sort -t $'\t' -k2,2 >> report/compartment_ids.txt
+    [ $d[] | {id: .id, path: (if .id == $tenancy then "root" else full_path(.id) end)} ]
+  | sort_by(if .path == "root" then "" else .path end)
+  | .[]
+  | [.id, .path]
+  | @tsv
+' report/compartments.json > report/compartment_ids.txt
 
 # pull policies per compartment into a single JSON file
 echo "" > report/policies_all_compartments.jsonl
