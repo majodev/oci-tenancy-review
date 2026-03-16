@@ -13,6 +13,7 @@ Commands:
   compartments   Build tenancy compartment map at report/compartment_ids.txt
   policies       Export tenancy policy statements to report/policy_statements.csv
   compute        Export compute inventory to report/inventory/compute_instances.csv
+  all            Run compartments + policies + compute
   help           Show this help
 
 Required environment:
@@ -23,6 +24,7 @@ Examples:
   ./oci-tenancy-review compartments
   ./oci-tenancy-review policies
   ./oci-tenancy-review compute
+  ./oci-tenancy-review all
 USAGE
 }
 
@@ -77,13 +79,84 @@ ensure_compartments() {
   [[ -s report/compartment_ids.txt ]] || build_compartments
 }
 
+find_target_compartments_by_resource_query() {
+  local query_text="$1"
+  local out_file="$2"
+  local page=""
+  local resp_file="report/.search_response.json"
+  local extracted_file="report/.search_compartments.tmp"
+  local ids_file="${out_file}.ids"
+
+  > "$ids_file"
+  while true; do
+    if [[ -n "$page" ]]; then
+      oci search resource structured-search \
+        --query-text "$query_text" \
+        --limit 1000 \
+        --page "$page" \
+        --output json > "$resp_file"
+    else
+      oci search resource structured-search \
+        --query-text "$query_text" \
+        --limit 1000 \
+        --output json > "$resp_file"
+    fi
+
+    jq -e '.' "$resp_file" >/dev/null 2>&1 || \
+      err "Search query returned non-JSON output for: $query_text"
+
+    jq -r '
+      if (.data | type) == "array" then
+        .data[]
+      elif (.data | type) == "object" and ((.data.items | type) == "array") then
+        .data.items[]
+      elif (.items | type) == "array" then
+        .items[]
+      else
+        empty
+      end
+      | (."compartment-id" // .compartmentId // .compartment_id // empty)
+    ' "$resp_file" > "$extracted_file"
+
+    cat "$extracted_file" >> "$ids_file"
+
+    page="$(jq -r '."opc-next-page" // empty' "$resp_file")"
+    [[ -z "$page" ]] && break
+  done
+
+  sort -u "$ids_file" -o "$ids_file"
+  rm -f "$resp_file" "$extracted_file"
+
+  # Fallback: if search returns no target compartments, iterate all known compartments.
+  # This preserves functionality for tenancies where a resource type is not indexed by Search.
+  if [[ ! -s "$ids_file" ]]; then
+    cut -f1 report/compartment_ids.txt > "$ids_file"
+  fi
+
+  {
+    echo "compartment-id,compartment-path"
+    while read -r cid; do
+      [[ -n "$cid" ]] || continue
+      cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
+      printf '%s,%s\n' "$cid" "$cpath"
+    done < "$ids_file"
+  } > "$out_file"
+
+  rm -f "$ids_file"
+}
+
 build_policies() {
   init_report_dirs
   require_tenancy
   ensure_compartments
 
+  find_target_compartments_by_resource_query \
+    "query policy resources" \
+    "report/policy_target_compartments.csv"
+
   > report/policies_all_compartments.jsonl
-  while read -r cid; do
+  while IFS=',' read -r cid _; do
+    [[ "$cid" == "compartment-id" ]] && continue
     [[ -n "$cid" ]] || continue
     cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
     oci iam policy list -c "$cid" --all --output json \
@@ -98,7 +171,7 @@ build_policies() {
             statements: .statements
           }
         ' >> report/policies_all_compartments.jsonl
-  done < <(cut -f1 report/compartment_ids.txt)
+  done < report/policy_target_compartments.csv
 
   jq -s '.' report/policies_all_compartments.jsonl > report/policies_all_compartments.json
 
@@ -115,8 +188,13 @@ build_compute() {
   require_tenancy
   ensure_compartments
 
+  find_target_compartments_by_resource_query \
+    "query instance resources" \
+    "report/inventory/compute_target_compartments.csv"
+
   > report/inventory/compute_instances.jsonl
-  while read -r cid; do
+  while IFS=',' read -r cid _; do
+    [[ "$cid" == "compartment-id" ]] && continue
     [[ -n "$cid" ]] || continue
     cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
     oci compute instance list --compartment-id "$cid" --all --output json \
@@ -154,7 +232,7 @@ build_compute() {
             timeCreated: ."time-created"
           }
         ' >> report/inventory/compute_instances.jsonl
-  done < <(cut -f1 report/compartment_ids.txt)
+  done < report/inventory/compute_target_compartments.csv
 
   jq -s '.' report/inventory/compute_instances.jsonl > report/inventory/compute_instances.json
 
@@ -184,6 +262,11 @@ main() {
       build_policies
       ;;
     compute)
+      build_compute
+      ;;
+    all)
+      build_compartments
+      build_policies
       build_compute
       ;;
     help|-h|--help)

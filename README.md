@@ -61,6 +61,9 @@ echo "Your tenancy ocid is: '${TENANCY_OCID}'"
 
 # Build compute inventory CSVs
 ./oci-tenancy-review compute
+
+# Run all steps (compartments + policies + compute)
+./oci-tenancy-review all
 ```
 
 Notes:
