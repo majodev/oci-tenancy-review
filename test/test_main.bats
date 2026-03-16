@@ -33,6 +33,30 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == iam\ region-subscription\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {"region-name": "eu-frankfurt-1"},
+    {"region-name": "eu-zurich-1"},
+    {"region-name": "eu-kragujevac-1"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == iam\ availability-domain\ list* ]]; then
+  if [[ "$args" == *"--region eu-frankfurt-1"* || "$args" == *"--region eu-zurich-1"* ]]; then
+    cat <<'JSON'
+{"data":[{"name":"AD-1"}]}
+JSON
+    exit 0
+  fi
+  echo '{"code":"NotAuthorizedOrNotFound"}' >&2
+  exit 1
+fi
+
 if [[ "$args" == search\ resource\ structured-search*"query policy resources"* ]]; then
   cat <<'JSON'
 {
@@ -168,6 +192,17 @@ teardown() {
   [[ "$output" == $'ocid1.tenancy.oc1..tenancy\troot\nocid1.compartment.oc1..child\tchild' ]]
 }
 
+@test "regions command writes report/regions.txt" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+
+  run "$SCRIPT_PATH" regions
+  [ "$status" -eq 0 ]
+  [ -f report/regions.txt ]
+  [[ "$output" == *"eu-frankfurt-1"* ]]
+  [[ "$output" == *"eu-zurich-1"* ]]
+}
+
 @test "policies command writes policy_statements.csv" {
   cd "$WORKDIR"
   export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
@@ -197,4 +232,18 @@ teardown() {
   [[ "$output" == *"app-01"* ]]
   [[ "$output" == *"VM.Standard.E4.Flex"* ]]
   [[ "$output" == *",2,16,"* ]]
+  [[ "$output" == *"+ oci iam region-subscription list --tenancy-id ocid1.tenancy.oc1..tenancy --all --output json"* ]]
+  [[ "$output" == *"[WARN] Skipping blacklisted region: eu-kragujevac-1"* ]]
+  [[ "$output" != *"--region eu-kragujevac-1"* ]]
+}
+
+@test "compute skips unreachable regions from OCI_REVIEW_REGIONS" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export OCI_REVIEW_REGIONS="eu-frankfurt-1,eu-mars-1"
+
+  run "$SCRIPT_PATH" compute
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"[WARN] Skipping unreachable region: eu-mars-1"* ]]
+  [[ "$output" == *"+ oci compute instance list --compartment-id ocid1.compartment.oc1..child --all --region eu-frankfurt-1 --output json"* ]]
 }

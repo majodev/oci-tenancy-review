@@ -83,16 +83,41 @@ If you used OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Con
 oci-tenancy-review/report.tar.gz
 ```
 
-To run a specific reporter, use the following:
+### Optional: set target region(s) for discovery
+
+If `OCI_REVIEW_REGIONS` is unset, discovery runs in all subscribed regions.
+Set `OCI_REVIEW_REGIONS` to override this and target one or more specific regions:
+
 ```bash
+# single region
+export OCI_REVIEW_REGIONS="eu-frankfurt-1"
+
+# multiple regions (comma-separated)
+export OCI_REVIEW_REGIONS="eu-frankfurt-1,eu-zurich-1"
+```
+
+When targeting regions (default all subscribed or `OCI_REVIEW_REGIONS`), the script
+first checks if each region is reachable and automatically skips unreachable ones.
+By default, `eu-kragujevac-1` is blacklisted. You can override blacklist regions with:
+
+```bash
+export BLACKLISTED_REGIONS="eu-amsterdam-1"
+```
+
+### Optional: run a specific reporter
+
+```bash
+# Build report/regions.txt (subscribed OCI regions)
+./oci-tenancy-review regions
+
 # Build report/compartment_ids.txt (OCID<TAB>path)
 ./oci-tenancy-review compartments
 
-# Build report/policies/policy_statements.csv
-./oci-tenancy-review policies
-
 # Build compute inventory CSVs at report/compute/
 ./oci-tenancy-review compute
+
+# Build report/policies/policy_statements.csv
+./oci-tenancy-review policies
 ```
 
 Notes:
@@ -100,6 +125,10 @@ Notes:
 - Run `./oci-tenancy-review help` for command help.
 
 ## Exported Files
+
+### `report/regions.txt`
+
+Newline-separated OCI region names subscribed for the tenancy (for example `eu-frankfurt-1`).
 
 ### `report/compartment_ids.txt`
 
@@ -133,6 +162,10 @@ CSV header:
 - `compartment-path`
 
 Contains the filtered compartment list used for compute instance collection.
+
+When multi-region mode is used, this is split into
+per-region files:
+- `report/compute/compute_target_compartments_<region>.csv`
 
 ### `report/compute/compute_instances.csv`
 

@@ -10,6 +10,7 @@ Usage: ./oci-tenancy-review <command>
 Version: ${VERSION}
 
 Commands:
+  regions        Export subscribed region names to report/regions.txt
   compartments   Build tenancy compartment map at report/compartment_ids.txt
   policies       Export tenancy policy statements to report/policies/policy_statements.csv
   compute        Export compute inventory to report/compute/compute_instances.csv
@@ -18,9 +19,15 @@ Commands:
 
 Required environment:
   TENANCY_OCID   Tenancy OCID (ocid1.tenancy...)
+Optional environment:
+  OCI_REVIEW_REGIONS  Comma-separated region list for compute discovery (for example: eu-frankfurt-1,eu-zurich-1).
+                      If unset, all subscribed regions are used.
+  BLACKLISTED_REGIONS Comma-separated region blacklist for compute discovery.
+                      Default: eu-kragujevac-1
 
 Examples:
   export TENANCY_OCID="ocid1.tenancy.oc1...."
+  ./oci-tenancy-review regions
   ./oci-tenancy-review compartments
   ./oci-tenancy-review policies
   ./oci-tenancy-review compute
@@ -48,6 +55,80 @@ init_report_dirs() {
 
 require_tenancy() {
   [[ -n "${TENANCY_OCID:-}" ]] || err "TENANCY_OCID is required"
+}
+
+get_review_regions() {
+  if [[ -z "${OCI_REVIEW_REGIONS:-}" ]]; then
+    return 0
+  fi
+
+  echo "$OCI_REVIEW_REGIONS" \
+    | tr ',' '\n' \
+    | awk '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0); if (length($0) > 0) print $0}'
+}
+
+get_all_subscribed_regions() {
+  oci_call iam region-subscription list \
+    --tenancy-id "$TENANCY_OCID" \
+    --all \
+    --output json \
+    | jq -r '.data[]?."region-name"'
+}
+
+get_blacklisted_regions() {
+  if [[ -z "${BLACKLISTED_REGIONS+x}" ]]; then
+    echo "eu-kragujevac-1"
+    return 0
+  fi
+
+  echo "${BLACKLISTED_REGIONS}" \
+    | tr ',' '\n' \
+    | awk '{gsub(/^[[:space:]]+|[[:space:]]+$/, "", $0); if (length($0) > 0) print $0}'
+}
+
+is_blacklisted_region() {
+  local region="$1"
+  local blocked
+  while IFS= read -r blocked; do
+    [[ -n "$blocked" ]] || continue
+    if [[ "$region" == "$blocked" ]]; then
+      return 0
+    fi
+  done < <(get_blacklisted_regions)
+  return 1
+}
+
+is_region_reachable() {
+  local region="$1"
+  oci_call iam availability-domain list \
+    --compartment-id "$TENANCY_OCID" \
+    --region "$region" \
+    --all \
+    --output json >/dev/null
+}
+
+filter_reachable_regions() {
+  local region
+  for region in "$@"; do
+    [[ -n "$region" ]] || continue
+    if is_blacklisted_region "$region"; then
+      echo "[WARN] Skipping blacklisted region: $region" >&2
+      continue
+    fi
+    if is_region_reachable "$region"; then
+      echo "$region"
+    else
+      echo "[WARN] Skipping unreachable region: $region" >&2
+    fi
+  done
+}
+
+build_regions() {
+  init_report_dirs
+  require_tenancy
+
+  get_all_subscribed_regions | sort -u > report/regions.txt
+  cat report/regions.txt
 }
 
 build_compartments() {
@@ -90,8 +171,12 @@ ensure_compartments() {
 find_target_compartments_by_resource_query() {
   local query_text="$1"
   local out_file="$2"
-  local page=""
   local resource_count=0
+  shift 2
+  local regions=("$@")
+  if [[ "${#regions[@]}" -eq 0 ]]; then
+    regions=("")
+  fi
   local tmp_dir
   tmp_dir="$(dirname "$out_file")"
   local resp_file="${tmp_dir}/.search_response.json"
@@ -99,51 +184,62 @@ find_target_compartments_by_resource_query() {
   local ids_file="${out_file}.ids"
 
   > "$ids_file"
-  while true; do
-    if [[ -n "$page" ]]; then
-      oci_call search resource structured-search \
-        --query-text "$query_text" \
-        --limit 1000 \
-        --page "$page" \
-        --output json > "$resp_file"
-    else
-      oci_call search resource structured-search \
-        --query-text "$query_text" \
-        --limit 1000 \
-        --output json > "$resp_file"
-    fi
-
-    jq -e '.' "$resp_file" >/dev/null 2>&1 || \
-      err "Search query returned non-JSON output for: $query_text"
-
-    jq -r '
-      if (.data | type) == "array" then
-        .data[]
-      elif (.data | type) == "object" and ((.data.items | type) == "array") then
-        .data.items[]
-      elif (.items | type) == "array" then
-        .items[]
+  local region page
+  for region in "${regions[@]}"; do
+    page=""
+    while true; do
+      if [[ -n "$region" && -n "$page" ]]; then
+        oci_call search resource structured-search \
+          --query-text "$query_text" \
+          --limit 1000 \
+          --page "$page" \
+          --region "$region" \
+          --output json > "$resp_file"
+      elif [[ -n "$region" ]]; then
+        oci_call search resource structured-search \
+          --query-text "$query_text" \
+          --limit 1000 \
+          --region "$region" \
+          --output json > "$resp_file"
+      elif [[ -n "$page" ]]; then
+        oci_call search resource structured-search \
+          --query-text "$query_text" \
+          --limit 1000 \
+          --page "$page" \
+          --output json > "$resp_file"
       else
-        empty
-      end
-      | (."compartment-id" // .compartmentId // .compartment_id // empty)
-    ' "$resp_file" > "$extracted_file"
+        oci_call search resource structured-search \
+          --query-text "$query_text" \
+          --limit 1000 \
+          --output json > "$resp_file"
+      fi
 
-    resource_count=$((resource_count + $(wc -l < "$extracted_file")))
-    cat "$extracted_file" >> "$ids_file"
+      jq -e '.' "$resp_file" >/dev/null 2>&1 || \
+        err "Search query returned non-JSON output for: $query_text"
 
-    page="$(jq -r '."opc-next-page" // empty' "$resp_file")"
-    [[ -z "$page" ]] && break
+      jq -r '
+        if (.data | type) == "array" then
+          .data[]
+        elif (.data | type) == "object" and ((.data.items | type) == "array") then
+          .data.items[]
+        elif (.items | type) == "array" then
+          .items[]
+        else
+          empty
+        end
+        | (."compartment-id" // .compartmentId // .compartment_id // empty)
+      ' "$resp_file" > "$extracted_file"
+
+      resource_count=$((resource_count + $(wc -l < "$extracted_file")))
+      cat "$extracted_file" >> "$ids_file"
+
+      page="$(jq -r '."opc-next-page" // empty' "$resp_file")"
+      [[ -z "$page" ]] && break
+    done
   done
 
   sort -u "$ids_file" -o "$ids_file"
   rm -f "$resp_file" "$extracted_file"
-
-  # Fallback: if search returns no target compartments, iterate all known compartments.
-  # This preserves functionality for tenancies where a resource type is not indexed by Search.
-  if [[ ! -s "$ids_file" ]]; then
-    cut -f1 report/compartment_ids.txt > "$ids_file"
-  fi
 
   {
     echo "compartment-id,compartment-path"
@@ -156,7 +252,7 @@ find_target_compartments_by_resource_query() {
 
   local target_compartments
   target_compartments="$(tail -n +2 "$out_file" | wc -l | tr -d ' ')"
-  echo "[INFO] find_target_compartments_by_resource_query: '${query_text}' returned ${resource_count} resources in ${target_compartments} compartments." >&2
+  echo "[INFO] find_target_compartments_by_resource_query: '${query_text}' returned ${resource_count} resources in ${target_compartments} compartments (regions=${regions})." >&2
 
   rm -f "$ids_file"
 }
@@ -203,52 +299,79 @@ build_compute() {
   init_report_dirs
   require_tenancy
   ensure_compartments
+  local -a requested_regions
+  local -a regions
+  requested_regions=()
+  if [[ -n "${OCI_REVIEW_REGIONS:-}" ]]; then
+    while IFS= read -r region; do
+      [[ -n "$region" ]] && requested_regions+=("$region")
+    done < <(get_review_regions || true)
+  else
+    while IFS= read -r region; do
+      [[ -n "$region" ]] && requested_regions+=("$region")
+    done < <(get_all_subscribed_regions || true)
+  fi
 
-  find_target_compartments_by_resource_query \
-    "query instance resources" \
-    "report/compute/compute_target_compartments.csv"
+  regions=()
+  if [[ "${#requested_regions[@]}" -gt 0 ]]; then
+    while IFS= read -r region; do
+      [[ -n "$region" ]] && regions+=("$region")
+    done < <(filter_reachable_regions "${requested_regions[@]}")
+    [[ "${#regions[@]}" -gt 0 ]] || err "No reachable regions from requested region set"
+  fi
 
   > report/compute/compute_instances.jsonl
-  while IFS=',' read -r cid _; do
-    [[ "$cid" == "compartment-id" ]] && continue
-    [[ -n "$cid" ]] || continue
-    cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
-    oci_call compute instance list --compartment-id "$cid" --all --output json \
-      | jq -c --arg cid "$cid" --arg cpath "$cpath" '
-          .data[]? | {
-            compartmentId: $cid,
-            compartmentPath: $cpath,
-            region: .region,
-            instanceId: .id,
-            instanceName: ."display-name",
-            shape: .shape,
-            ocpus: ."shape-config".ocpus,
-            memoryInGBs: ."shape-config"."memory-in-gbs",
-            baselineOcpuUtilization: ."shape-config"."baseline-ocpu-utilization",
-            lifecycleState: ."lifecycle-state",
-            availabilityDomain: ."availability-domain",
-            faultDomain: ."fault-domain",
-            imageId: ."image-id",
-            launchMode: ."launch-mode",
-            sourceType: ."source-details"."source-type",
-            capacityReservationId: ."capacity-reservation-id",
-            dedicatedVmHostId: ."dedicated-vm-host-id",
-            preemptibleActionType: ."preemptible-instance-config"."preemption-action"."type",
-            availabilityRecoveryAction: ."availability-config"."recovery-action",
-            legacyImdsEndpointsDisabled: ."instance-options"."are-legacy-imds-endpoints-disabled",
-            networkType: ."launch-options"."network-type",
-            consistentVolumeNamingEnabled: ."launch-options"."is-consistent-volume-naming-enabled",
-            monitoringDisabled: ."agent-config"."is-monitoring-disabled",
-            managementDisabled: ."agent-config"."is-management-disabled",
-            liveMigrationPreferred: ."is-live-migration-preferred",
-            pvEncryptionInTransitEnabled: ."is-pv-encryption-in-transit-enabled",
-            metadataKeyCount: ((.metadata // {}) | keys | length),
-            freeformTagCount: ((."freeform-tags" // {}) | keys | length),
-            definedTagNamespaceCount: ((."defined-tags" // {}) | keys | length),
-            timeCreated: ."time-created"
-          }
-        ' >> report/compute/compute_instances.jsonl
-  done < report/compute/compute_target_compartments.csv
+  local region
+  for region in "${regions[@]}"; do
+    local region_target_file
+    region_target_file="report/compute/compute_target_compartments_${region}.csv"
+
+    find_target_compartments_by_resource_query \
+      "query instance resources" \
+      "$region_target_file" \
+      "$region"
+
+    while IFS=',' read -r cid _; do
+      [[ "$cid" == "compartment-id" ]] && continue
+      [[ -n "$cid" ]] || continue
+      cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
+      oci_call compute instance list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c --arg cid "$cid" --arg cpath "$cpath" '
+            .data[]? | {
+              compartmentId: $cid,
+              compartmentPath: $cpath,
+              region: .region,
+              instanceId: .id,
+              instanceName: ."display-name",
+              shape: .shape,
+              ocpus: ."shape-config".ocpus,
+              memoryInGBs: ."shape-config"."memory-in-gbs",
+              baselineOcpuUtilization: ."shape-config"."baseline-ocpu-utilization",
+              lifecycleState: ."lifecycle-state",
+              availabilityDomain: ."availability-domain",
+              faultDomain: ."fault-domain",
+              imageId: ."image-id",
+              launchMode: ."launch-mode",
+              sourceType: ."source-details"."source-type",
+              capacityReservationId: ."capacity-reservation-id",
+              dedicatedVmHostId: ."dedicated-vm-host-id",
+              preemptibleActionType: ."preemptible-instance-config"."preemption-action"."type",
+              availabilityRecoveryAction: ."availability-config"."recovery-action",
+              legacyImdsEndpointsDisabled: ."instance-options"."are-legacy-imds-endpoints-disabled",
+              networkType: ."launch-options"."network-type",
+              consistentVolumeNamingEnabled: ."launch-options"."is-consistent-volume-naming-enabled",
+              monitoringDisabled: ."agent-config"."is-monitoring-disabled",
+              managementDisabled: ."agent-config"."is-management-disabled",
+              liveMigrationPreferred: ."is-live-migration-preferred",
+              pvEncryptionInTransitEnabled: ."is-pv-encryption-in-transit-enabled",
+              metadataKeyCount: ((.metadata // {}) | keys | length),
+              freeformTagCount: ((."freeform-tags" // {}) | keys | length),
+              definedTagNamespaceCount: ((."defined-tags" // {}) | keys | length),
+              timeCreated: ."time-created"
+            }
+          ' >> report/compute/compute_instances.jsonl
+    done < "$region_target_file"
+  done
 
   jq -s '.' report/compute/compute_instances.jsonl > report/compute/compute_instances.json
 
@@ -270,7 +393,12 @@ main() {
   require_cmd sort
 
   local cmd="${1:-help}"
+  [[ $# -le 1 ]] || err "Unknown option: ${2}"
+
   case "$cmd" in
+    regions)
+      build_regions
+      ;;
     compartments)
       build_compartments
       ;;
@@ -282,8 +410,8 @@ main() {
       ;;
     all)
       build_compartments
-      build_policies
       build_compute
+      build_policies
       ;;
     help|-h|--help)
       usage
