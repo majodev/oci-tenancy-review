@@ -57,6 +57,70 @@ JSON
   exit 1
 fi
 
+if [[ "$args" == limits\ service\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {"name": "compute"},
+    {"name": "block-storage"}
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == limits\ value\ list* ]]; then
+  if [[ "$args" == *"--service-name compute"* ]]; then
+    cat <<'JSON'
+{
+  "data": [
+    {
+      "name": "standard-e4-core-count",
+      "scope-type": "REGION",
+      "value": 10
+    }
+  ]
+}
+JSON
+  else
+    cat <<'JSON'
+{
+  "data": [
+    {
+      "name": "total-storage-gb",
+      "scope-type": "REGION",
+      "value": 100
+    }
+  ]
+}
+JSON
+  fi
+  exit 0
+fi
+
+if [[ "$args" == limits\ resource-availability\ get* ]]; then
+  if [[ "$args" == *"--service-name compute"* ]]; then
+    cat <<'JSON'
+{
+  "data": {
+    "used": 9,
+    "available": 1
+  }
+}
+JSON
+  else
+    cat <<'JSON'
+{
+  "data": {
+    "used": 20,
+    "available": 80
+  }
+}
+JSON
+  fi
+  exit 0
+fi
+
 if [[ "$args" == search\ resource\ structured-search*"query policy resources"* ]]; then
   cat <<'JSON'
 {
@@ -218,6 +282,22 @@ teardown() {
   [[ "$output" == *"compartment-id,compartment-name,policy-name"* ]]
   [[ "$output" == *"ocid1.compartment.oc1..child"* ]]
   [[ "$output" == *"policy-child"* ]]
+}
+
+@test "limits command writes prioritized service_limits.csv" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export OCI_REVIEW_REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" limits
+  [ "$status" -eq 0 ]
+  [ -f report/limits/service_limits.csv ]
+
+  run cat report/limits/service_limits.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"priority-rank,priority-reason,region,service-name,limit-name"* ]]
+  [[ "$output" == *"NEAR_80_PERCENT"* ]]
+  [[ "$output" == *"compute"* ]]
 }
 
 @test "compute command writes compute_instances.csv with shape and sizing" {

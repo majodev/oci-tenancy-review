@@ -21,7 +21,8 @@ Commands:
   compartments   Build tenancy compartment map at report/compartments.csv
   policies       Export tenancy policy statements to report/policies/policy_statements.csv
   compute        Export compute inventory to report/compute/compute_instances.csv
-  all            Run compartments + policies + compute
+  limits         Export compute limits posture to report/limits/service_limits.csv
+  all            Run compartments + policies + compute + limits
   help           Show this help
 
 Required environment:
@@ -38,6 +39,7 @@ Examples:
   ./oci-tenancy-review compartments
   ./oci-tenancy-review policies
   ./oci-tenancy-review compute
+  ./oci-tenancy-review limits
   ./oci-tenancy-review compute --debug
   ./oci-tenancy-review all
 USAGE
@@ -93,7 +95,7 @@ require_cmd() {
 
 
 init_report_dirs() {
-  mkdir -p report report/compute report/policies
+  mkdir -p report report/compute report/policies report/limits
 }
 
 require_tenancy() {
@@ -175,6 +177,31 @@ filter_reachable_regions() {
   fi
 }
 
+resolve_target_regions() {
+  local -a requested_regions
+  local -a regions
+  requested_regions=()
+  if [[ -n "${OCI_REVIEW_REGIONS:-}" ]]; then
+    while IFS= read -r region; do
+      [[ -n "$region" ]] && requested_regions+=("$region")
+    done < <(get_review_regions || true)
+  else
+    while IFS= read -r region; do
+      [[ -n "$region" ]] && requested_regions+=("$region")
+    done < <(get_all_subscribed_regions || true)
+  fi
+
+  regions=()
+  if [[ "${#requested_regions[@]}" -gt 0 ]]; then
+    while IFS= read -r region; do
+      [[ -n "$region" ]] && regions+=("$region")
+    done < <(filter_reachable_regions "${requested_regions[@]}")
+  fi
+
+  [[ "${#regions[@]}" -gt 0 ]] || fatal "No reachable regions from requested region set"
+  printf '%s\n' "${regions[@]}"
+}
+
 build_regions() {
   init_report_dirs
   require_tenancy
@@ -228,6 +255,47 @@ ensure_compartments() {
 get_compartment_path() {
   local cid="$1"
   awk -F',' -v cid="$cid" 'NR>1 && $1==cid {sub(/^[^,]*,/, "", $0); print $0; exit}' report/compartments.csv
+}
+
+build_region_limit_prefixes() {
+  local region="$1"
+  local out_file="$2"
+
+  > "$out_file"
+  jq -r --arg region "$region" '.[] | select(.region == $region) | .shape // empty' report/compute/compute_instances.json \
+    | while read -r shape; do
+        local shape_lc
+        shape_lc="$(echo "$shape" | tr '[:upper:]' '[:lower:]')"
+
+        if [[ "$shape_lc" =~ ^(vm|bm)\.standard\.([a-z0-9]+)\.flex$ ]]; then
+          local fam
+          fam="${BASH_REMATCH[2]}"
+          echo "standard-${fam}-" >> "$out_file"
+          echo "vm-standard-${fam}-" >> "$out_file"
+        fi
+
+        if [[ "$shape_lc" =~ ^(vm|bm)\.standard([0-9]+)\..*$ ]]; then
+          local gen
+          gen="${BASH_REMATCH[2]}"
+          echo "standard${gen}-" >> "$out_file"
+          echo "vm-standard${gen}-" >> "$out_file"
+        fi
+      done
+
+  sort -u "$out_file" -o "$out_file"
+}
+
+limit_matches_prefixes() {
+  local limit_name="$1"
+  local prefixes_file="$2"
+  local p
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    if [[ "$limit_name" == "$p"* ]]; then
+      return 0
+    fi
+  done < "$prefixes_file"
+  return 1
 }
 
 search() {
@@ -374,26 +442,11 @@ build_compute() {
   init_report_dirs
   require_tenancy
   ensure_compartments
-  local -a requested_regions
   local -a regions
-  requested_regions=()
-  if [[ -n "${OCI_REVIEW_REGIONS:-}" ]]; then
-    while IFS= read -r region; do
-      [[ -n "$region" ]] && requested_regions+=("$region")
-    done < <(get_review_regions || true)
-  else
-    while IFS= read -r region; do
-      [[ -n "$region" ]] && requested_regions+=("$region")
-    done < <(get_all_subscribed_regions || true)
-  fi
-
   regions=()
-  if [[ "${#requested_regions[@]}" -gt 0 ]]; then
-    while IFS= read -r region; do
-      [[ -n "$region" ]] && regions+=("$region")
-    done < <(filter_reachable_regions "${requested_regions[@]}")
-    [[ "${#regions[@]}" -gt 0 ]] || fatal "No reachable regions from requested region set"
-  fi
+  while IFS= read -r region; do
+    [[ -n "$region" ]] && regions+=("$region")
+  done < <(resolve_target_regions)
 
   > report/compute/compute_instances.jsonl
   local region
@@ -469,6 +522,235 @@ build_compute() {
   verbose "wrote 'report/compute/compute_shapes_summary.csv'"
 }
 
+ensure_compute_inventory() {
+  [[ -s report/compute/compute_instances.json ]] || build_compute
+}
+
+build_limits() {
+  init_report_dirs
+  require_tenancy
+  ensure_compute_inventory
+
+  local -a regions
+  regions=()
+  while IFS= read -r region; do
+    [[ -n "$region" ]] && regions+=("$region")
+  done < <(jq -r '.[].region // empty' report/compute/compute_instances.json | sort -u)
+
+  if [[ "${#regions[@]}" -eq 0 ]]; then
+    echo "[]" > report/limits/service_limits.json
+    jq -n -r '
+      [
+        "priority-rank",
+        "priority-reason",
+        "region",
+        "service-name",
+        "limit-name",
+        "scope-type",
+        "availability-domain",
+        "limit-value",
+        "used",
+        "available",
+        "usage-percent",
+        "is-negative-availability",
+        "is-near-80pct",
+        "is-compute-service"
+      ] | @csv
+    ' > report/limits/service_limits.csv
+    verbose "wrote 'report/limits/service_limits.json'"
+    verbose "wrote 'report/limits/service_limits.csv'"
+    return 0
+  fi
+
+  > report/limits/limits_rows.jsonl
+  local region
+  for region in "${regions[@]}"; do
+    local values_file
+    values_file="report/limits/.values_${region}.json"
+    local prefixes_file
+    prefixes_file="report/limits/.prefixes_${region}.txt"
+    build_region_limit_prefixes "$region" "$prefixes_file"
+    if [[ ! -s "$prefixes_file" ]]; then
+      rm -f "$values_file" "$prefixes_file"
+      continue
+    fi
+    local service_name="compute"
+    progress_prefix "build_limits ${region}/${service_name}"
+    local had_limit_iterations="false"
+
+    oci limits value list \
+      --compartment-id "$TENANCY_OCID" \
+      --service-name "$service_name" \
+      --all \
+      --region "$region" \
+      --output json > "$values_file"
+
+    while IFS=$'\t' read -r limit_name scope_type ad_name limit_value; do
+      [[ -n "$limit_name" ]] || continue
+      if ! limit_matches_prefixes "$limit_name" "$prefixes_file"; then
+        continue
+      fi
+      progress_dot
+      had_limit_iterations="true"
+
+      local ra_json
+      local used_val=""
+      local avail_val=""
+
+      if [[ "$scope_type" == "AD" && -n "$ad_name" && "$ad_name" != "null" ]]; then
+        if ra_json="$(oci limits resource-availability get \
+          --compartment-id "$TENANCY_OCID" \
+          --service-name "$service_name" \
+          --limit-name "$limit_name" \
+          --availability-domain "$ad_name" \
+          --region "$region" \
+          --output json 2>/dev/null)"; then
+          used_val="$(echo "$ra_json" | jq -r '.data.used // .data.currentUsage // empty')"
+          avail_val="$(echo "$ra_json" | jq -r '.data.available // .data.availableAmount // empty')"
+        fi
+      else
+        if ra_json="$(oci limits resource-availability get \
+          --compartment-id "$TENANCY_OCID" \
+          --service-name "$service_name" \
+          --limit-name "$limit_name" \
+          --region "$region" \
+          --output json 2>/dev/null)"; then
+          used_val="$(echo "$ra_json" | jq -r '.data.used // .data.currentUsage // empty')"
+          avail_val="$(echo "$ra_json" | jq -r '.data.available // .data.availableAmount // empty')"
+        fi
+      fi
+
+      jq -cn \
+        --arg region "$region" \
+        --arg service "$service_name" \
+        --arg limit "$limit_name" \
+        --arg scope "$scope_type" \
+        --arg ad "$ad_name" \
+        --arg value "$limit_value" \
+        --arg used "$used_val" \
+        --arg avail "$avail_val" '
+        {
+          region: $region,
+          serviceName: $service,
+          limitName: $limit,
+          scopeType: $scope,
+          availabilityDomain: $ad,
+          limitValue: $value,
+          used: $used,
+          available: $avail
+        }
+      ' >> report/limits/limits_rows.jsonl
+    done < <(
+      jq -r '
+        .data[]?
+        | [
+            (.name // ""),
+            (."scope-type" // .scopeType // ""),
+            (."availability-domain" // .availabilityDomain // ""),
+            (.value // "")
+          ]
+        | @tsv
+      ' "$values_file"
+    )
+    progress_newline
+    [[ "$had_limit_iterations" == "true" ]] || true
+    rm -f "$values_file" "$prefixes_file"
+  done
+
+  jq -s '
+    def to_num:
+      if . == null or . == "" then null
+      else (try (tonumber) catch null) end;
+    def pct($u; $l):
+      if $u == null or $l == null or $l == 0 then null
+      else (($u / $l) * 100) end;
+    map(
+      . as $r
+      | ($r.limitValue | to_num) as $limit
+      | ($r.used | to_num) as $used
+      | ($r.available | to_num) as $avail
+      | (pct($used; $limit)) as $pct
+      | ($avail != null and $avail < 0) as $neg
+      | ($pct != null and $pct >= 80) as $near
+      | (($r.serviceName | ascii_downcase) == "compute") as $is_compute
+      | ($neg as $n | $pct as $p |
+          if $n then "NEGATIVE_AVAILABILITY"
+          elif $p != null and $p >= 100 then "AT_OR_OVER_LIMIT"
+          elif $p != null and $p >= 80 then "NEAR_80_PERCENT"
+          else "OK"
+          end
+        ) as $reason
+      | ($neg as $n | $pct as $p | $is_compute as $c |
+          if $n then 0
+          elif $p != null and $p >= 100 then 1
+          elif $p != null and $p >= 80 and $c then 2
+          elif $p != null and $p >= 80 then 3
+          elif $c then 4
+          else 5
+          end
+        ) as $priority
+      | {
+          priorityRank: $priority,
+          priorityReason: $reason,
+          region: $r.region,
+          serviceName: $r.serviceName,
+          limitName: $r.limitName,
+          scopeType: $r.scopeType,
+          availabilityDomain: $r.availabilityDomain,
+          limitValue: $limit,
+          used: $used,
+          available: $avail,
+          usagePercent: $pct,
+          isNegativeAvailability: $neg,
+          isNear80Percent: $near,
+          isComputeService: $is_compute
+        }
+    )
+    | map(select((.used // 0) > 0 or .isNegativeAvailability or .isNear80Percent))
+    | sort_by(.priorityRank, -( .usagePercent // -1 ), .region, .serviceName, .limitName)
+  ' report/limits/limits_rows.jsonl > report/limits/service_limits.json
+  verbose "wrote 'report/limits/service_limits.json'"
+
+  jq -r '
+    [
+      "priority-rank",
+      "priority-reason",
+      "region",
+      "service-name",
+      "limit-name",
+      "scope-type",
+      "availability-domain",
+      "limit-value",
+      "used",
+      "available",
+      "usage-percent",
+      "is-negative-availability",
+      "is-near-80pct",
+      "is-compute-service"
+    ],
+    (
+      .[] |
+      [
+        .priorityRank,
+        .priorityReason,
+        .region,
+        .serviceName,
+        .limitName,
+        .scopeType,
+        .availabilityDomain,
+        .limitValue,
+        .used,
+        .available,
+        .usagePercent,
+        .isNegativeAvailability,
+        .isNear80Percent,
+        .isComputeService
+      ]
+    ) | @csv
+  ' report/limits/service_limits.json > report/limits/service_limits.csv
+  verbose "wrote 'report/limits/service_limits.csv'"
+}
+
 main() {
   local cmd=""
 
@@ -516,10 +798,14 @@ main() {
     compute)
       build_compute
       ;;
+    limits)
+      build_limits
+      ;;
     all)
       build_compartments
       build_compute
       build_policies
+      build_limits
       ;;
     help|-h|--help)
       usage

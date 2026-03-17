@@ -116,6 +116,9 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 # Build compute inventory CSVs at report/compute/
 ./oci-tenancy-review compute
 
+# Build compute limits posture CSV at report/limits/
+./oci-tenancy-review limits
+
 # Build report/policies/policy_statements.csv
 ./oci-tenancy-review policies
 
@@ -210,6 +213,27 @@ CSV header:
 - `count`
 
 Shape distribution summary derived from `compute_instances.csv`.
+
+### `report/limits/service_limits.csv`
+
+CSV header:
+- `priority-rank`
+- `priority-reason`
+- `region`
+- `service-name`
+- `limit-name`
+- `scope-type`
+- `availability-domain`
+- `limit-value`
+- `used`
+- `available`
+- `usage-percent`
+- `is-negative-availability`
+- `is-near-80pct`
+- `is-compute-service`
+
+Rows are ordered by risk priority (negative availability first, then near/over-threshold, with compute emphasized).
+This report currently focuses on compute service limits.
 
 ## Tests
 
