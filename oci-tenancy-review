@@ -3,10 +3,11 @@
 set -Eeuo pipefail
 
 VERSION="0.1.0"
+VERBOSE="false"
 
 usage() {
   cat <<USAGE
-Usage: ./oci-tenancy-review <command>
+Usage: ./oci-tenancy-review <command> [-v|--verbose]
 Version: ${VERSION}
 
 Commands:
@@ -31,6 +32,7 @@ Examples:
   ./oci-tenancy-review compartments
   ./oci-tenancy-review policies
   ./oci-tenancy-review compute
+  ./oci-tenancy-review compute --verbose
   ./oci-tenancy-review all
 USAGE
 }
@@ -40,14 +42,32 @@ err() {
   exit 1
 }
 
+log_file_written() {
+  local file_path="$1"
+  echo "[INFO] Wrote file: ${file_path}" >&2
+}
+
+progress_dot() {
+  [[ "$VERBOSE" == "true" ]] || printf '.' >&2
+}
+
+progress_prefix() {
+  local message="$1"
+  [[ "$VERBOSE" == "true" ]] || printf '[INFO] %s ' "$message" >&2
+}
+
+progress_newline() {
+  if [[ "$VERBOSE" == "true" ]]; then
+    return 0
+  fi
+  printf '\n' >&2
+  return 0
+}
+
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || err "Missing required command: $1"
 }
 
-oci_call() {
-  echo "+ oci $*" >&2
-  oci "$@"
-}
 
 init_report_dirs() {
   mkdir -p report report/compute report/policies
@@ -68,7 +88,7 @@ get_review_regions() {
 }
 
 get_all_subscribed_regions() {
-  oci_call iam region-subscription list \
+  oci iam region-subscription list \
     --tenancy-id "$TENANCY_OCID" \
     --all \
     --output json \
@@ -100,7 +120,7 @@ is_blacklisted_region() {
 
 is_region_reachable() {
   local region="$1"
-  oci_call iam availability-domain list \
+  oci iam availability-domain list \
     --compartment-id "$TENANCY_OCID" \
     --region "$region" \
     --all \
@@ -108,19 +128,28 @@ is_region_reachable() {
 }
 
 filter_reachable_regions() {
+  progress_prefix "filter_reachable_regions processing"
   local region
+  local had_iterations="false"
   for region in "$@"; do
+    progress_dot
+    had_iterations="true"
     [[ -n "$region" ]] || continue
     if is_blacklisted_region "$region"; then
+      progress_newline
       echo "[WARN] Skipping blacklisted region: $region" >&2
       continue
     fi
     if is_region_reachable "$region"; then
       echo "$region"
     else
+      progress_newline
       echo "[WARN] Skipping unreachable region: $region" >&2
     fi
   done
+  if [[ "$had_iterations" == "true" ]]; then
+    progress_newline
+  fi
 }
 
 build_regions() {
@@ -128,6 +157,7 @@ build_regions() {
   require_tenancy
 
   get_all_subscribed_regions | sort -u > report/regions.txt
+  log_file_written "report/regions.txt"
   cat report/regions.txt
 }
 
@@ -135,7 +165,7 @@ build_compartments() {
   init_report_dirs
   require_tenancy
 
-  oci_call iam compartment list \
+  oci iam compartment list \
     --compartment-id "$TENANCY_OCID" \
     --compartment-id-in-subtree true \
     --access-level ANY \
@@ -159,6 +189,8 @@ build_compartments() {
     | [.id, .path]
     | @tsv
   ' report/compartments.json > report/compartment_ids.txt
+  log_file_written "report/compartments.json"
+  log_file_written "report/compartment_ids.txt"
 
   total_compartments="$(wc -l < report/compartment_ids.txt | tr -d ' ')"
   echo "[INFO] build_compartments: ${total_compartments} total compartments." >&2
@@ -168,7 +200,7 @@ ensure_compartments() {
   [[ -s report/compartment_ids.txt ]] || build_compartments
 }
 
-find_target_compartments_by_resource_query() {
+search() {
   local query_text="$1"
   local out_file="$2"
   local resource_count=0
@@ -187,28 +219,32 @@ find_target_compartments_by_resource_query() {
   local region page
   for region in "${regions[@]}"; do
     page=""
+    progress_prefix "search '${query_text}' ${region:-default-region} processing"
+    local had_iterations="false"
     while true; do
+      progress_dot
+      had_iterations="true"
       if [[ -n "$region" && -n "$page" ]]; then
-        oci_call search resource structured-search \
+        oci search resource structured-search \
           --query-text "$query_text" \
           --limit 1000 \
           --page "$page" \
           --region "$region" \
           --output json > "$resp_file"
       elif [[ -n "$region" ]]; then
-        oci_call search resource structured-search \
+        oci search resource structured-search \
           --query-text "$query_text" \
           --limit 1000 \
           --region "$region" \
           --output json > "$resp_file"
       elif [[ -n "$page" ]]; then
-        oci_call search resource structured-search \
+        oci search resource structured-search \
           --query-text "$query_text" \
           --limit 1000 \
           --page "$page" \
           --output json > "$resp_file"
       else
-        oci_call search resource structured-search \
+        oci search resource structured-search \
           --query-text "$query_text" \
           --limit 1000 \
           --output json > "$resp_file"
@@ -236,6 +272,7 @@ find_target_compartments_by_resource_query() {
       page="$(jq -r '."opc-next-page" // empty' "$resp_file")"
       [[ -z "$page" ]] && break
     done
+    progress_newline
   done
 
   sort -u "$ids_file" -o "$ids_file"
@@ -249,10 +286,11 @@ find_target_compartments_by_resource_query() {
       printf '%s,%s\n' "$cid" "$cpath"
     done < "$ids_file"
   } > "$out_file"
+  log_file_written "$out_file"
 
   local target_compartments
   target_compartments="$(tail -n +2 "$out_file" | wc -l | tr -d ' ')"
-  echo "[INFO] find_target_compartments_by_resource_query: '${query_text}' returned ${resource_count} resources in ${target_compartments} compartments (regions=${regions})." >&2
+  echo "[INFO] search '${query_text}' returned ${resource_count} resources in ${target_compartments} compartments (regions=${regions})." >&2
 
   rm -f "$ids_file"
 }
@@ -262,16 +300,20 @@ build_policies() {
   require_tenancy
   ensure_compartments
 
-  find_target_compartments_by_resource_query \
+  search \
     "query policy resources" \
     "report/policies/policy_target_compartments.csv"
 
   > report/policies/policies_all_compartments.jsonl
+  progress_prefix "build_policies processing"
+  local had_policy_iterations="false"
   while IFS=',' read -r cid _; do
     [[ "$cid" == "compartment-id" ]] && continue
     [[ -n "$cid" ]] || continue
+    progress_dot
+    had_policy_iterations="true"
     cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
-    oci_call iam policy list -c "$cid" --all --output json \
+    oci iam policy list -c "$cid" --all --output json \
       | jq -c --arg cid "$cid" --arg cpath "$cpath" '
           .data[]? | {
             compartmentId: $cid,
@@ -284,8 +326,10 @@ build_policies() {
           }
         ' >> report/policies/policies_all_compartments.jsonl
   done < report/policies/policy_target_compartments.csv
+  progress_newline
 
   jq -s '.' report/policies/policies_all_compartments.jsonl > report/policies/policies_all_compartments.json
+  log_file_written "report/policies/policies_all_compartments.json"
 
   jq -r '
     ["compartment-id","compartment-name","policy-name","created-by","time-created","the actual statement","id"],
@@ -293,6 +337,7 @@ build_policies() {
       [$p.compartmentId, $p.compartmentPath, $p.name, ($p.definedTags["Oracle-Tags"]["CreatedBy"] // ""), $p.timeCreated, ., $p.id]
     ) | @csv
   ' report/policies/policies_all_compartments.json > report/policies/policy_statements.csv
+  log_file_written "report/policies/policy_statements.csv"
 }
 
 build_compute() {
@@ -326,16 +371,20 @@ build_compute() {
     local region_target_file
     region_target_file="report/compute/compute_target_compartments_${region}.csv"
 
-    find_target_compartments_by_resource_query \
+    search \
       "query instance resources" \
       "$region_target_file" \
       "$region"
 
+    progress_prefix "build_compute processing ${region}"
+    local had_compute_iterations="false"
     while IFS=',' read -r cid _; do
       [[ "$cid" == "compartment-id" ]] && continue
       [[ -n "$cid" ]] || continue
+      progress_dot
+      had_compute_iterations="true"
       cpath="$(awk -F'\t' -v cid="$cid" '$1==cid {print $2; exit}' report/compartment_ids.txt)"
-      oci_call compute instance list --compartment-id "$cid" --all --region "$region" --output json \
+      oci compute instance list --compartment-id "$cid" --all --region "$region" --output json \
         | jq -c --arg cid "$cid" --arg cpath "$cpath" '
             .data[]? | {
               compartmentId: $cid,
@@ -371,29 +420,58 @@ build_compute() {
             }
           ' >> report/compute/compute_instances.jsonl
     done < "$region_target_file"
+    progress_newline
   done
 
   jq -s '.' report/compute/compute_instances.jsonl > report/compute/compute_instances.json
+  log_file_written "report/compute/compute_instances.json"
 
   jq -r '
     ["compartment-path","region","instance-name","shape","ocpus","memory-in-gbs","baseline-ocpu-utilization","lifecycle-state","availability-domain","fault-domain","image-id","launch-mode","source-type","capacity-reservation-id","dedicated-vm-host-id","preemptible-action-type","availability-recovery-action","legacy-imds-endpoints-disabled","network-type","consistent-volume-naming-enabled","monitoring-disabled","management-disabled","live-migration-preferred","pv-encryption-in-transit-enabled","metadata-key-count","freeform-tag-count","defined-tag-namespace-count","time-created","instance-id"],
     (.[] | [.compartmentPath, .region, .instanceName, .shape, .ocpus, .memoryInGBs, .baselineOcpuUtilization, .lifecycleState, .availabilityDomain, .faultDomain, .imageId, .launchMode, .sourceType, .capacityReservationId, .dedicatedVmHostId, .preemptibleActionType, .availabilityRecoveryAction, .legacyImdsEndpointsDisabled, .networkType, .consistentVolumeNamingEnabled, .monitoringDisabled, .managementDisabled, .liveMigrationPreferred, .pvEncryptionInTransitEnabled, .metadataKeyCount, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .instanceId]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_instances.csv
+  log_file_written "report/compute/compute_instances.csv"
 
   jq -r '
     ["shape","count"],
     (group_by(.shape) | map([.[0].shape, (length|tostring)]) | sort_by(.[1] | tonumber) | reverse | .[]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_shapes_summary.csv
+  log_file_written "report/compute/compute_shapes_summary.csv"
 }
 
 main() {
+  local cmd=""
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -v|--verbose)
+        VERBOSE="true"
+        ;;
+      help|-h|--help)
+        if [[ -z "$cmd" ]]; then
+          cmd="help"
+        else
+          err "Unknown option: $1"
+        fi
+        ;;
+      *)
+        if [[ -z "$cmd" ]]; then
+          cmd="$1"
+        else
+          err "Unknown option: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+
+  [[ -n "$cmd" ]] || cmd="help"
+  [[ "$VERBOSE" == "true" ]] && set -x
+
   require_cmd oci
   require_cmd jq
   require_cmd awk
   require_cmd sort
-
-  local cmd="${1:-help}"
-  [[ $# -le 1 ]] || err "Unknown option: ${2}"
 
   case "$cmd" in
     regions)

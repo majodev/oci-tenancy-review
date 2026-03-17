@@ -118,6 +118,9 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 
 # Build report/policies/policy_statements.csv
 ./oci-tenancy-review policies
+
+# Enable verbose shell tracing (-x)
+./oci-tenancy-review compute --verbose
 ```
 
 Notes:

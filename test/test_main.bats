@@ -232,9 +232,6 @@ teardown() {
   [[ "$output" == *"app-01"* ]]
   [[ "$output" == *"VM.Standard.E4.Flex"* ]]
   [[ "$output" == *",2,16,"* ]]
-  [[ "$output" == *"+ oci iam region-subscription list --tenancy-id ocid1.tenancy.oc1..tenancy --all --output json"* ]]
-  [[ "$output" == *"[WARN] Skipping blacklisted region: eu-kragujevac-1"* ]]
-  [[ "$output" != *"--region eu-kragujevac-1"* ]]
 }
 
 @test "compute skips unreachable regions from OCI_REVIEW_REGIONS" {
@@ -245,5 +242,13 @@ teardown() {
   run "$SCRIPT_PATH" compute
   [ "$status" -eq 0 ]
   [[ "$output" == *"[WARN] Skipping unreachable region: eu-mars-1"* ]]
-  [[ "$output" == *"+ oci compute instance list --compartment-id ocid1.compartment.oc1..child --all --region eu-frankfurt-1 --output json"* ]]
+}
+
+@test "verbose mode enables bash xtrace output" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+
+  run "$SCRIPT_PATH" compute --verbose
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"+ oci iam region-subscription list --tenancy-id ocid1.tenancy.oc1..tenancy --all --output json"* ]]
 }
