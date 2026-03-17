@@ -3,7 +3,7 @@
 set -Eeuo pipefail
 
 VERSION="0.1.0"
-VERBOSE="false"
+DEBUG_MODE="false"
 COLORS_ENABLED="${COLORS_ENABLED:=$( (command -v tput > /dev/null 2>&1 && [[ $(tput -T"${TERM:-dumb}" colors 2>/dev/null || echo 0) -ge 8 ]] && echo "true") || echo "false")}"
 COLOR_RED=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0;31m" || printf "")
 COLOR_GREEN=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0;32m" || printf "")
@@ -13,7 +13,7 @@ COLOR_END=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0m" || printf "")
 
 usage() {
   cat <<USAGE
-Usage: ./oci-tenancy-review <command> [-v|--verbose]
+Usage: ./oci-tenancy-review <command> [-d|--debug]
 Version: ${VERSION}
 
 Commands:
@@ -38,7 +38,7 @@ Examples:
   ./oci-tenancy-review compartments
   ./oci-tenancy-review policies
   ./oci-tenancy-review compute
-  ./oci-tenancy-review compute --verbose
+  ./oci-tenancy-review compute --debug
   ./oci-tenancy-review all
 USAGE
 }
@@ -50,7 +50,7 @@ log() {
 
 verbose() {
   local msg="$1"
-  printf '%b%s%b\n' "$COLOR_GRAY" "$msg" "$COLOR_END" >&2
+  printf '%b[V] %s: %s%b\n' "$COLOR_GRAY" "${FUNCNAME[1]}" "$msg" "$COLOR_END" >&2
 }
 
 warn() {
@@ -71,16 +71,16 @@ fatal() {
 
 
 progress_dot() {
-  [[ "$VERBOSE" == "true" ]] || printf '.' >&2
+  [[ "$DEBUG_MODE" == "true" ]] || printf '.' >&2
 }
 
 progress_prefix() {
   local message="$1"
-  [[ "$VERBOSE" == "true" ]] || printf '%b[I] %s %b' "$COLOR_GREEN" "$message" "$COLOR_END" >&2
+  [[ "$DEBUG_MODE" == "true" ]] || printf '%b[I] %s %b' "$COLOR_GREEN" "$message" "$COLOR_END" >&2
 }
 
 progress_newline() {
-  if [[ "$VERBOSE" == "true" ]]; then
+  if [[ "$DEBUG_MODE" == "true" ]]; then
     return 0
   fi
   printf '\n' >&2
@@ -180,7 +180,7 @@ build_regions() {
   require_tenancy
 
   get_all_subscribed_regions | sort -u > report/regions.txt
-  verbose "Wrote file: report/regions.txt"
+  verbose "wrote 'report/regions.txt'"
   cat report/regions.txt
 }
 
@@ -212,8 +212,8 @@ build_compartments() {
     | [.id, .path]
     | @tsv
   ' report/compartments.json > report/compartment_ids.txt
-  verbose "Wrote file: report/compartments.json"
-  verbose "Wrote file: report/compartment_ids.txt"
+  verbose "wrote 'report/compartments.json'"
+  verbose "wrote 'report/compartment_ids.txt'"
 
   total_compartments="$(wc -l < report/compartment_ids.txt | tr -d ' ')"
   log "${total_compartments} total compartments."
@@ -309,7 +309,7 @@ search() {
       printf '%s,%s\n' "$cid" "$cpath"
     done < "$ids_file"
   } > "$out_file"
-  verbose "Wrote file: $out_file"
+  verbose "wrote '$out_file'"
 
   local target_compartments
   target_compartments="$(tail -n +2 "$out_file" | wc -l | tr -d ' ')"
@@ -352,7 +352,7 @@ build_policies() {
   progress_newline
 
   jq -s '.' report/policies/policies_all_compartments.jsonl > report/policies/policies_all_compartments.json
-  verbose "Wrote file: report/policies/policies_all_compartments.json"
+  verbose "wrote 'report/policies/policies_all_compartments.json'"
 
   jq -r '
     ["compartment-id","compartment-name","policy-name","created-by","time-created","the actual statement","id"],
@@ -360,7 +360,7 @@ build_policies() {
       [$p.compartmentId, $p.compartmentPath, $p.name, ($p.definedTags["Oracle-Tags"]["CreatedBy"] // ""), $p.timeCreated, ., $p.id]
     ) | @csv
   ' report/policies/policies_all_compartments.json > report/policies/policy_statements.csv
-  verbose "Wrote file: report/policies/policy_statements.csv"
+  verbose "wrote 'report/policies/policy_statements.csv'"
 }
 
 build_compute() {
@@ -447,19 +447,19 @@ build_compute() {
   done
 
   jq -s '.' report/compute/compute_instances.jsonl > report/compute/compute_instances.json
-  verbose "Wrote file: report/compute/compute_instances.json"
+  verbose "wrote 'report/compute/compute_instances.json'"
 
   jq -r '
     ["compartment-path","region","instance-name","shape","ocpus","memory-in-gbs","baseline-ocpu-utilization","lifecycle-state","availability-domain","fault-domain","image-id","launch-mode","source-type","capacity-reservation-id","dedicated-vm-host-id","preemptible-action-type","availability-recovery-action","legacy-imds-endpoints-disabled","network-type","consistent-volume-naming-enabled","monitoring-disabled","management-disabled","live-migration-preferred","pv-encryption-in-transit-enabled","metadata-key-count","freeform-tag-count","defined-tag-namespace-count","time-created","instance-id"],
     (.[] | [.compartmentPath, .region, .instanceName, .shape, .ocpus, .memoryInGBs, .baselineOcpuUtilization, .lifecycleState, .availabilityDomain, .faultDomain, .imageId, .launchMode, .sourceType, .capacityReservationId, .dedicatedVmHostId, .preemptibleActionType, .availabilityRecoveryAction, .legacyImdsEndpointsDisabled, .networkType, .consistentVolumeNamingEnabled, .monitoringDisabled, .managementDisabled, .liveMigrationPreferred, .pvEncryptionInTransitEnabled, .metadataKeyCount, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .instanceId]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_instances.csv
-  verbose "Wrote file: report/compute/compute_instances.csv"
+  verbose "wrote 'report/compute/compute_instances.csv'"
 
   jq -r '
     ["shape","count"],
     (group_by(.shape) | map([.[0].shape, (length|tostring)]) | sort_by(.[1] | tonumber) | reverse | .[]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_shapes_summary.csv
-  verbose "Wrote file: report/compute/compute_shapes_summary.csv"
+  verbose "wrote 'report/compute/compute_shapes_summary.csv'"
 }
 
 main() {
@@ -467,8 +467,8 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -v|--verbose)
-        VERBOSE="true"
+      -d|--debug)
+        DEBUG_MODE="true"
         ;;
       help|-h|--help)
         if [[ -z "$cmd" ]]; then
@@ -489,7 +489,7 @@ main() {
   done
 
   [[ -n "$cmd" ]] || cmd="help"
-  [[ "$VERBOSE" == "true" ]] && set -x
+  [[ "$DEBUG_MODE" == "true" ]] && set -x
 
   require_cmd oci
   require_cmd jq
