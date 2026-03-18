@@ -542,8 +542,6 @@ build_limits() {
     echo "[]" > report/limits/service_limits.json
     jq -n -r '
       [
-        "priority-rank",
-        "priority-reason",
         "region",
         "service-name",
         "limit-name",
@@ -668,28 +666,7 @@ build_limits() {
       | ($r.used | to_num) as $used
       | ($r.available | to_num) as $avail
       | (pct($used; $limit)) as $pct
-      | ($avail != null and $avail < 0) as $neg
-      | ($pct != null and $pct >= 80) as $near
-      | (($r.serviceName | ascii_downcase) == "compute") as $is_compute
-      | ($neg as $n | $pct as $p |
-          if $n then "NEGATIVE_AVAILABILITY"
-          elif $p != null and $p >= 100 then "AT_OR_OVER_LIMIT"
-          elif $p != null and $p >= 80 then "NEAR_80_PERCENT"
-          else "OK"
-          end
-        ) as $reason
-      | ($neg as $n | $pct as $p | $is_compute as $c |
-          if $n then 0
-          elif $p != null and $p >= 100 then 1
-          elif $p != null and $p >= 80 and $c then 2
-          elif $p != null and $p >= 80 then 3
-          elif $c then 4
-          else 5
-          end
-        ) as $priority
       | {
-          priorityRank: $priority,
-          priorityReason: $reason,
           region: $r.region,
           serviceName: $r.serviceName,
           limitName: $r.limitName,
@@ -698,20 +675,15 @@ build_limits() {
           limitValue: $limit,
           used: $used,
           available: $avail,
-          usagePercent: $pct,
-          isNegativeAvailability: $neg,
-          isNear80Percent: $near,
-          isComputeService: $is_compute
+          usagePercent: $pct
         }
     )
-    | sort_by(.priorityRank, -( .usagePercent // -1 ), .region, .serviceName, .limitName)
+    | sort_by(-( .usagePercent // -1 ), .region, .serviceName, .limitName)
   ' report/limits/limits_rows.jsonl > report/limits/service_limits.json
   verbose "wrote 'report/limits/service_limits.json'"
 
   jq -r '
     [
-      "priority-rank",
-      "priority-reason",
       "region",
       "service-name",
       "limit-name",
@@ -725,8 +697,6 @@ build_limits() {
     (
       .[] |
       [
-        .priorityRank,
-        .priorityReason,
         .region,
         .serviceName,
         .limitName,

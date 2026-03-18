@@ -284,7 +284,7 @@ teardown() {
   [[ "$output" == *"policy-child"* ]]
 }
 
-@test "limits command writes prioritized service_limits.csv" {
+@test "limits command writes service_limits.csv" {
   cd "$WORKDIR"
   export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
   export OCI_REVIEW_REGIONS="eu-frankfurt-1"
@@ -295,8 +295,8 @@ teardown() {
 
   run cat report/limits/service_limits.csv
   [ "$status" -eq 0 ]
-  [[ "$output" == *"priority-rank,priority-reason,region,service-name,limit-name"* ]]
-  [[ "$output" == *"NEAR_80_PERCENT"* ]]
+  [[ "$output" == *"region,service-name,limit-name,scope-type"* ]]
+  [[ "$output" == *"eu-frankfurt-1,compute"* ]]
   [[ "$output" == *"compute"* ]]
 }
 

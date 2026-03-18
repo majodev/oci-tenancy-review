@@ -217,8 +217,6 @@ Shape distribution summary derived from `compute_instances.csv`.
 ### `report/limits/service_limits.csv`
 
 CSV header:
-- `priority-rank`
-- `priority-reason`
 - `region`
 - `service-name`
 - `limit-name`
@@ -229,7 +227,7 @@ CSV header:
 - `available`
 - `usage-percent`
 
-Rows are ordered by risk priority (negative availability first, then near/over-threshold, with compute emphasized).
+Rows are ordered by `usage-percent` descending, then region/service/limit.
 This report currently focuses on compute service limits.
 
 ## Tests
