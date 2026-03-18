@@ -1,5 +1,7 @@
 # OCI Tenancy Review
 
+> **DISCLAIMER** - This is not an official Oracle application. It is not supported by Oracle Support.
+
 This repository provides a single shell script to generate OCI tenancy review artifacts under `report/`.
 This script is compatible with OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm).
 
@@ -242,6 +244,15 @@ CSV header:
 - `id`
 
 This report is designed for storage overview plus DR/failure-mode discovery (backup and replication coverage).
+
+### `report/storage/storage_target_compartments.csv`
+
+CSV header:
+- `region`
+- `compartment-id`
+- `compartment-path`
+
+Single consolidated target-compartment list for block/boot storage discovery across all inspected regions.
 
 ### `report/limits/service_limits.csv`
 

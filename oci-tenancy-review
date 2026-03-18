@@ -730,15 +730,16 @@ build_storage() {
   > report/storage/boot_backups.jsonl
   > report/storage/block_replicas.jsonl
   > report/storage/boot_replicas.jsonl
+  echo "region,compartment-id,compartment-path" > report/storage/storage_target_compartments.csv
 
   local region
   for region in "${regions[@]}"; do
     local volume_targets
     local boot_targets
     local merged_targets
-    volume_targets="report/storage/storage_target_compartments_volume_${region}.csv"
-    boot_targets="report/storage/storage_target_compartments_boot_${region}.csv"
-    merged_targets="report/storage/storage_target_compartments_${region}.csv"
+    volume_targets="report/storage/.storage_target_compartments_volume_${region}.csv"
+    boot_targets="report/storage/.storage_target_compartments_boot_${region}.csv"
+    merged_targets="report/storage/.storage_target_compartments_${region}.csv"
 
     search "query volume resources" "$volume_targets" "$region"
     search "query bootvolume resources" "$boot_targets" "$region"
@@ -750,7 +751,12 @@ build_storage() {
         tail -n +2 "$boot_targets"
       } | sort -u
     } > "$merged_targets"
-    verbose "wrote '${merged_targets}'"
+
+    while IFS=',' read -r cid cpath; do
+      [[ "$cid" == "compartment-id" ]] && continue
+      [[ -n "$cid" ]] || continue
+      printf '%s,%s,%s\n' "$region" "$cid" "$cpath" >> report/storage/storage_target_compartments.csv
+    done < "$merged_targets"
 
     progress_prefix "build_storage ${region}"
     local had_iterations="false"
@@ -844,7 +850,16 @@ build_storage() {
     done < "$merged_targets"
     progress_newline
     [[ "$had_iterations" == "true" ]] || true
+
+    rm -f "$volume_targets" "$boot_targets" "$merged_targets"
   done
+
+  {
+    echo "region,compartment-id,compartment-path"
+    tail -n +2 report/storage/storage_target_compartments.csv | sort -u
+  } > report/storage/.storage_target_compartments_sorted.csv
+  mv report/storage/.storage_target_compartments_sorted.csv report/storage/storage_target_compartments.csv
+  verbose "wrote 'report/storage/storage_target_compartments.csv'"
 
   jq -s '
     group_by(.sourceId)
