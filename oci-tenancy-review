@@ -21,8 +21,9 @@ Commands:
   compartments   Build tenancy compartment map at report/compartments.csv
   policies       Export tenancy policy statements to report/policies/policy_statements.csv
   compute        Export compute inventory to report/compute/compute_instances.csv
+  block-storage        Export block + boot volume inventory to report/storage/storage_inventory.csv
   limits         Export compute limits posture to report/limits/service_limits.csv
-  all            Run compartments + policies + compute + limits
+  all            Run compartments + policies + compute + block-storage + limits
   help           Show this help
 
 Required environment:
@@ -39,6 +40,7 @@ Examples:
   ./oci-tenancy-review compartments
   ./oci-tenancy-review policies
   ./oci-tenancy-review compute
+  ./oci-tenancy-review block-storage
   ./oci-tenancy-review limits
   ./oci-tenancy-review compute --debug
   ./oci-tenancy-review all
@@ -95,7 +97,7 @@ require_cmd() {
 
 
 init_report_dirs() {
-  mkdir -p report report/compute report/policies report/limits
+  mkdir -p report report/compute report/policies report/limits report/storage
 }
 
 require_tenancy() {
@@ -712,6 +714,262 @@ build_limits() {
   verbose "wrote 'report/limits/service_limits.csv'"
 }
 
+build_storage() {
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+
+  local -a regions
+  regions=()
+  while IFS= read -r region; do
+    [[ -n "$region" ]] && regions+=("$region")
+  done < <(resolve_target_regions)
+
+  > report/storage/storage_inventory.jsonl
+  > report/storage/block_backups.jsonl
+  > report/storage/boot_backups.jsonl
+  > report/storage/block_replicas.jsonl
+  > report/storage/boot_replicas.jsonl
+
+  local region
+  for region in "${regions[@]}"; do
+    local volume_targets
+    local boot_targets
+    local merged_targets
+    volume_targets="report/storage/storage_target_compartments_volume_${region}.csv"
+    boot_targets="report/storage/storage_target_compartments_boot_${region}.csv"
+    merged_targets="report/storage/storage_target_compartments_${region}.csv"
+
+    search "query volume resources" "$volume_targets" "$region"
+    search "query bootvolume resources" "$boot_targets" "$region"
+
+    {
+      echo "compartment-id,compartment-path"
+      {
+        tail -n +2 "$volume_targets"
+        tail -n +2 "$boot_targets"
+      } | sort -u
+    } > "$merged_targets"
+    verbose "wrote '${merged_targets}'"
+
+    progress_prefix "build_storage ${region}"
+    local had_iterations="false"
+    while IFS=',' read -r cid _; do
+      [[ "$cid" == "compartment-id" ]] && continue
+      [[ -n "$cid" ]] || continue
+      progress_dot
+      had_iterations="true"
+
+      cpath="$(get_compartment_path "$cid")"
+
+      oci bv volume list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c --arg region "$region" --arg cid "$cid" --arg cpath "$cpath" '
+            .data[]? | {
+              kind: "block-volume",
+              region: $region,
+              compartmentId: $cid,
+              compartmentPath: $cpath,
+              id: .id,
+              displayName: ."display-name",
+              lifecycleState: ."lifecycle-state",
+              availabilityDomain: ."availability-domain",
+              sizeInGBs: ."size-in-gbs",
+              vpusPerGB: ."vpus-per-gb",
+              autoTuneEnabled: ."is-auto-tune-enabled",
+              kmsKeyId: ."kms-key-id",
+              backupPolicyId: ."backup-policy-id",
+              freeformTagCount: ((."freeform-tags" // {}) | keys | length),
+              definedTagNamespaceCount: ((."defined-tags" // {}) | keys | length),
+              timeCreated: ."time-created"
+            }
+          ' >> report/storage/storage_inventory.jsonl
+
+      oci bv boot-volume list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c --arg region "$region" --arg cid "$cid" --arg cpath "$cpath" '
+            .data[]? | {
+              kind: "boot-volume",
+              region: $region,
+              compartmentId: $cid,
+              compartmentPath: $cpath,
+              id: .id,
+              displayName: ."display-name",
+              lifecycleState: ."lifecycle-state",
+              availabilityDomain: ."availability-domain",
+              sizeInGBs: ."size-in-gbs",
+              vpusPerGB: null,
+              autoTuneEnabled: null,
+              kmsKeyId: ."kms-key-id",
+              backupPolicyId: ."backup-policy-id",
+              freeformTagCount: ((."freeform-tags" // {}) | keys | length),
+              definedTagNamespaceCount: ((."defined-tags" // {}) | keys | length),
+              timeCreated: ."time-created"
+            }
+          ' >> report/storage/storage_inventory.jsonl
+
+      oci bv backup list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c '
+            .data[]? | {
+              sourceId: (."volume-id" // ."source-volume-id" // ""),
+              timeCreated: ."time-created",
+              backupType: (.type // ""),
+              lifecycleState: ."lifecycle-state"
+            } | select(.sourceId != "")
+          ' >> report/storage/block_backups.jsonl
+
+      oci bv boot-volume-backup list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c '
+            .data[]? | {
+              sourceId: (."boot-volume-id" // ."source-boot-volume-id" // ""),
+              timeCreated: ."time-created",
+              backupType: (.type // ""),
+              lifecycleState: ."lifecycle-state"
+            } | select(.sourceId != "")
+          ' >> report/storage/boot_backups.jsonl
+
+      oci bv block-volume-replica list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c '
+            .data[]? | {
+              sourceId: (."source-volume-id" // ."volume-id" // ."source-details".id // .sourceDetails.id // ""),
+              lifecycleState: ."lifecycle-state"
+            } | select(.sourceId != "")
+          ' >> report/storage/block_replicas.jsonl
+
+      oci bv boot-volume-replica list --compartment-id "$cid" --all --region "$region" --output json \
+        | jq -c '
+            .data[]? | {
+              sourceId: (."source-boot-volume-id" // ."boot-volume-id" // ."source-details".id // .sourceDetails.id // ""),
+              lifecycleState: ."lifecycle-state"
+            } | select(.sourceId != "")
+          ' >> report/storage/boot_replicas.jsonl
+    done < "$merged_targets"
+    progress_newline
+    [[ "$had_iterations" == "true" ]] || true
+  done
+
+  jq -s '
+    group_by(.sourceId)
+    | map({
+        (.[0].sourceId): {
+          backupCount: length,
+          latestBackupTime: (map(.timeCreated) | max),
+          latestBackupType: (sort_by(.timeCreated) | last | .backupType)
+        }
+      })
+    | add // {}
+  ' report/storage/block_backups.jsonl > report/storage/block_backup_index.json
+
+  jq -s '
+    group_by(.sourceId)
+    | map({
+        (.[0].sourceId): {
+          backupCount: length,
+          latestBackupTime: (map(.timeCreated) | max),
+          latestBackupType: (sort_by(.timeCreated) | last | .backupType)
+        }
+      })
+    | add // {}
+  ' report/storage/boot_backups.jsonl > report/storage/boot_backup_index.json
+
+  jq -s '
+    group_by(.sourceId)
+    | map({ (.[0].sourceId): {replicaCount: length} })
+    | add // {}
+  ' report/storage/block_replicas.jsonl > report/storage/block_replica_index.json
+
+  jq -s '
+    group_by(.sourceId)
+    | map({ (.[0].sourceId): {replicaCount: length} })
+    | add // {}
+  ' report/storage/boot_replicas.jsonl > report/storage/boot_replica_index.json
+
+  jq -s \
+    --slurpfile blockBackups report/storage/block_backup_index.json \
+    --slurpfile bootBackups report/storage/boot_backup_index.json \
+    --slurpfile blockReplicas report/storage/block_replica_index.json \
+    --slurpfile bootReplicas report/storage/boot_replica_index.json '
+      map(
+        . as $v
+        | (if $v.kind == "block-volume" then ($blockBackups[0][$v.id] // {}) else ($bootBackups[0][$v.id] // {}) end) as $b
+        | (if $v.kind == "block-volume" then ($blockReplicas[0][$v.id] // {}) else ($bootReplicas[0][$v.id] // {}) end) as $r
+        | {
+            region: $v.region,
+            compartmentPath: $v.compartmentPath,
+            kind: $v.kind,
+            displayName: $v.displayName,
+            id: $v.id,
+            lifecycleState: $v.lifecycleState,
+            availabilityDomain: $v.availabilityDomain,
+            sizeInGBs: $v.sizeInGBs,
+            vpusPerGB: $v.vpusPerGB,
+            autoTuneEnabled: $v.autoTuneEnabled,
+            kmsKeyId: $v.kmsKeyId,
+            backupPolicyId: $v.backupPolicyId,
+            backupCount: ($b.backupCount // 0),
+            latestBackupTime: ($b.latestBackupTime // ""),
+            latestBackupType: ($b.latestBackupType // ""),
+            replicaCount: ($r.replicaCount // 0),
+            drProtection: (if (($b.backupCount // 0) > 0 or ($r.replicaCount // 0) > 0 or ($v.backupPolicyId // "") != "") then "YES" else "NO" end),
+            freeformTagCount: $v.freeformTagCount,
+            definedTagNamespaceCount: $v.definedTagNamespaceCount,
+            timeCreated: $v.timeCreated
+          }
+      )
+      | sort_by(.kind, .region, .compartmentPath, .displayName)
+    ' report/storage/storage_inventory.jsonl > report/storage/storage_inventory_enriched.json
+  verbose "wrote 'report/storage/storage_inventory_enriched.json'"
+
+  jq -r '
+    [
+      "region",
+      "compartment-path",
+      "kind",
+      "display-name",
+      "lifecycle-state",
+      "availability-domain",
+      "size-in-gbs",
+      "vpus-per-gb",
+      "auto-tune-enabled",
+      "backup-policy-id",
+      "backup-count",
+      "latest-backup-time",
+      "latest-backup-type",
+      "replica-count",
+      "dr-protection",
+      "kms-key-id",
+      "freeform-tag-count",
+      "defined-tag-namespace-count",
+      "time-created",
+      "id"
+    ],
+    (
+      .[] |
+      [
+        .region,
+        .compartmentPath,
+        .kind,
+        .displayName,
+        .lifecycleState,
+        .availabilityDomain,
+        .sizeInGBs,
+        .vpusPerGB,
+        .autoTuneEnabled,
+        .backupPolicyId,
+        .backupCount,
+        .latestBackupTime,
+        .latestBackupType,
+        .replicaCount,
+        .drProtection,
+        .kmsKeyId,
+        .freeformTagCount,
+        .definedTagNamespaceCount,
+        .timeCreated,
+        .id
+      ]
+    ) | @csv
+  ' report/storage/storage_inventory_enriched.json > report/storage/storage_inventory.csv
+  verbose "wrote 'report/storage/storage_inventory.csv'"
+}
+
 main() {
   local cmd=""
 
@@ -759,12 +1017,16 @@ main() {
     compute)
       build_compute
       ;;
+    block-storage)
+      build_storage
+      ;;
     limits)
       build_limits
       ;;
     all)
       build_compartments
       build_compute
+      build_storage
       build_limits
       build_policies
       ;;

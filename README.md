@@ -116,6 +116,9 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 # Build compute inventory CSVs at report/compute/
 ./oci-tenancy-review compute
 
+# Build block + boot volume inventory CSV at report/storage/
+./oci-tenancy-review block-storage
+
 # Build compute limits posture CSV at report/limits/
 ./oci-tenancy-review limits
 
@@ -213,6 +216,32 @@ CSV header:
 - `count`
 
 Shape distribution summary derived from `compute_instances.csv`.
+
+### `report/storage/storage_inventory.csv`
+
+CSV header:
+- `region`
+- `compartment-path`
+- `kind` (`block-volume` or `boot-volume`)
+- `display-name`
+- `lifecycle-state`
+- `availability-domain`
+- `size-in-gbs`
+- `vpus-per-gb`
+- `auto-tune-enabled`
+- `backup-policy-id`
+- `backup-count`
+- `latest-backup-time`
+- `latest-backup-type`
+- `replica-count`
+- `dr-protection` (`YES`/`NO`)
+- `kms-key-id`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `id`
+
+This report is designed for storage overview plus DR/failure-mode discovery (backup and replication coverage).
 
 ### `report/limits/service_limits.csv`
 

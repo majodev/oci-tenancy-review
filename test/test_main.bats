@@ -147,6 +147,32 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == search\ resource\ structured-search*"query volume resources"* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "compartment-id": "ocid1.compartment.oc1..child"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == search\ resource\ structured-search*"query bootvolume resources"* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "compartment-id": "ocid1.compartment.oc1..child"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 if [[ "$args" == iam\ policy\ list* ]]; then
   if [[ "$args" == *"ocid1.compartment.oc1..child"* ]]; then
     cat <<'JSON'
@@ -224,6 +250,116 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == bv\ volume\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.volume.oc1..v1",
+      "display-name": "data-vol-1",
+      "lifecycle-state": "AVAILABLE",
+      "availability-domain": "AD-1",
+      "size-in-gbs": 200,
+      "vpus-per-gb": 20,
+      "is-auto-tune-enabled": true,
+      "kms-key-id": "ocid1.key.oc1..k1",
+      "backup-policy-id": "ocid1.volumebackuppolicy.oc1..p1",
+      "freeform-tags": {"owner":"app"},
+      "defined-tags": {"Operations":{"CostCenter":"123"}},
+      "time-created": "2026-01-03T00:00:00+00:00"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == bv\ boot-volume\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.bootvolume.oc1..b1",
+      "display-name": "boot-vol-1",
+      "lifecycle-state": "AVAILABLE",
+      "availability-domain": "AD-1",
+      "size-in-gbs": 50,
+      "kms-key-id": null,
+      "backup-policy-id": null,
+      "freeform-tags": {},
+      "defined-tags": {},
+      "time-created": "2026-01-03T00:00:00+00:00"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == bv\ backup\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.volumebackup.oc1..vb1",
+      "volume-id": "ocid1.volume.oc1..v1",
+      "time-created": "2026-01-04T00:00:00+00:00",
+      "type": "INCREMENTAL",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == bv\ boot-volume-backup\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.bootvolumebackup.oc1..bb1",
+      "boot-volume-id": "ocid1.bootvolume.oc1..b1",
+      "time-created": "2026-01-05T00:00:00+00:00",
+      "type": "FULL",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == bv\ block-volume-replica\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.blockvolumereplica.oc1..r1",
+      "source-volume-id": "ocid1.volume.oc1..v1",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == bv\ boot-volume-replica\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.bootvolumereplica.oc1..r1",
+      "source-boot-volume-id": "ocid1.bootvolume.oc1..b1",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 echo "Unhandled mock OCI command: $args" >&2
 exit 1
 MOCK
@@ -298,6 +434,23 @@ teardown() {
   [[ "$output" == *"region,service-name,limit-name,scope-type"* ]]
   [[ "$output" == *"eu-frankfurt-1,compute"* ]]
   [[ "$output" == *"compute"* ]]
+}
+
+@test "block-storage command writes storage_inventory.csv with dr fields" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export OCI_REVIEW_REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" block-storage
+  [ "$status" -eq 0 ]
+  [ -f report/storage/storage_inventory.csv ]
+
+  run cat report/storage/storage_inventory.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"region,compartment-path,kind,display-name"* ]]
+  [[ "$output" == *"block-volume"* ]]
+  [[ "$output" == *"boot-volume"* ]]
+  [[ "$output" == *"\"YES\""* ]]
 }
 
 @test "compute command writes compute_instances.csv with shape and sizing" {
