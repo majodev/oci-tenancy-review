@@ -86,12 +86,8 @@ fatal() {
 }
 
 
-progress_dot() {
+progress_network_call_request() {
   printf '.' >&2
-}
-
-progress_prefix() {
-  verbose "$1"
 }
 
 require_cmd() {
@@ -120,7 +116,7 @@ oci_cli() {
   local jitter_seconds
   local wait_seconds
 
-  progress_dot
+  progress_network_call_request
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-stderr.XXXXXX")"
   if command oci "$@" 2>"$stderr_file"; then
     rc=0
@@ -133,6 +129,7 @@ oci_cli() {
       cat "$stderr_file" >&2
     fi
     rm -f "$stderr_file"
+
     return 0
   fi
 
@@ -148,7 +145,7 @@ oci_cli() {
     wait_seconds=$((bailout_seconds + jitter_seconds))
     warn "oci call rate-limited; retrying once after ${wait_seconds}s: oci $*"
     sleep "$wait_seconds"
-    progress_dot
+    progress_network_call_request
     command oci "$@"
     return $?
   fi
@@ -216,7 +213,7 @@ is_region_reachable() {
 }
 
 filter_reachable_regions() {
-  progress_prefix "filter_reachable_regions processing"
+  verbose "filter_reachable_regions processing"
   local region
   local had_iterations="false"
   for region in "$@"; do
@@ -237,7 +234,7 @@ filter_reachable_regions() {
 
 resolve_target_regions() {
   if [[ -s report/regions.txt ]]; then
-    log "using cached target regions from report/regions.txt"
+    verbose "using cached target regions from report/regions.txt"
     cat report/regions.txt
     return 0
   fi
@@ -278,6 +275,9 @@ build_regions() {
   resolve_target_regions_uncached > report/regions.txt
   verbose "wrote 'report/regions.txt'"
   cat report/regions.txt
+  local total
+  total="$(wc -l < report/regions.txt | tr -d ' ')"
+  log "Done. ${total} regions."
 }
 
 build_compartments() {
@@ -313,8 +313,8 @@ build_compartments() {
   verbose "wrote 'report/compartments.json'"
   verbose "wrote 'report/compartments.csv'"
 
-  total_compartments="$(tail -n +2 report/compartments.csv | wc -l | tr -d ' ')"
-  log "${total_compartments} total compartments."
+  total="$(tail -n +2 report/compartments.csv | wc -l | tr -d ' ')"
+  log "Done. ${total} compartments."
 }
 
 ensure_compartments() {
@@ -387,7 +387,7 @@ search() {
   local region page
   for region in "${regions[@]}"; do
     page=""
-    progress_prefix "search '${query_text}' ${region:-default-region} processing"
+    verbose "search '${query_text}' ${region:-default-region} processing"
     local had_iterations="false"
     while true; do
       had_iterations="true"
@@ -457,7 +457,7 @@ search() {
 
   local target_compartments
   target_compartments="$(tail -n +2 "$out_file" | wc -l | tr -d ' ')"
-  log "search '${query_text}' returned ${resource_count} resources in ${target_compartments} compartments (regions=${regions})."
+  verbose "search '${query_text}' returned ${resource_count} resources in ${target_compartments} compartments (regions=${regions})."
 
   rm -f "$ids_file"
 }
@@ -485,6 +485,9 @@ prepare_policies() {
     "report/policies/policy_target_compartments.csv"
 
   awk -F',' 'NR>1 && $1 != "" {print $1}' report/policies/policy_target_compartments.csv > report/policies/.policy_cids.txt
+  local total
+  total="$(wc -l < report/policies/.policy_cids.txt | tr -d ' ')"
+  log "Done. ${total} target compartments."
 }
 
 build_policy_compartment() {
@@ -504,6 +507,9 @@ build_policy_compartment() {
           statements: .statements
         }
       ' > "$out_file"
+  local total
+  total="$(wc -l < "$out_file" | tr -d ' ')"
+  verbose "Done. ${total} policies in ${cid}."
 }
 
 merge_policies() {
@@ -527,6 +533,9 @@ merge_policies() {
     ) | @csv
   ' report/policies/policies_all_compartments.json > report/policies/policy_statements.csv
   verbose "wrote 'report/policies/policy_statements.csv'"
+  local total
+  total="$(tail -n +2 report/policies/policy_statements.csv | wc -l | tr -d ' ')"
+  log "Done. ${total} policy statements."
 }
 
 build_compute() {
@@ -554,7 +563,7 @@ build_compute() {
       "$region_target_file" \
       "$region"
 
-    progress_prefix "build_compute processing ${region}"
+    verbose "build_compute processing ${region}"
     local had_compute_iterations="false"
     while IFS=',' read -r cid _; do
       [[ "$cid" == "compartment-id" ]] && continue
@@ -614,6 +623,9 @@ build_compute() {
     (group_by(.shape) | map([.[0].shape, (length|tostring)]) | sort_by(.[1] | tonumber) | reverse | .[]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_shapes_summary.csv
   verbose "wrote 'report/compute/compute_shapes_summary.csv'"
+
+  total="$(tail -n +2 report/compute/compute_shapes_summary.csv | wc -l | tr -d ' ')"
+  log "Done. ${total} total instances."
 }
 
 ensure_compute_inventory() {
@@ -675,6 +687,9 @@ build_compute_compartment_region() {
           timeCreated: ."time-created"
         }
       ' > "$out_file"
+  local total
+  total="$(wc -l < "$out_file" | tr -d ' ')"
+  verbose "Done. ${total} instances in ${region}/${cid}."
 }
 
 build_storage_compartment_region() {
@@ -736,6 +751,9 @@ build_storage_compartment_region() {
     | jq -c '.data[]? | {sourceId: (."source-volume-id" // ."volume-id" // ."source-details".id // .sourceDetails.id // ""), lifecycleState: ."lifecycle-state"} | select(.sourceId != "")' > "${out_prefix}.block_replicas.jsonl"
   oci_cli bv boot-volume-replica list --compartment-id "$cid" --all --region "$region" --output json \
     | jq -c '.data[]? | {sourceId: (."source-boot-volume-id" // ."boot-volume-id" // ."source-details".id // .sourceDetails.id // ""), lifecycleState: ."lifecycle-state"} | select(.sourceId != "")' > "${out_prefix}.boot_replicas.jsonl"
+  local total
+  total="$(wc -l < "${out_prefix}.inventory.jsonl" | tr -d ' ')"
+  verbose "Done. ${total} disks in ${region}/${cid}."
 }
 
 build_compute_region() {
@@ -766,6 +784,9 @@ prepare_compute_region() {
   rm -f "${out_dir}/compartments/"*.jsonl
   search "query instance resources" "$region_target_file" "$region"
   awk -F',' 'NR>1 && $1 != "" {print $1}' "$region_target_file" > "$cid_file"
+  local total
+  total="$(wc -l < "$cid_file" | tr -d ' ')"
+  verbose "Done. ${total} target compartments for ${region}."
 }
 
 merge_compute_region() {
@@ -798,6 +819,9 @@ merge_compute_region() {
     (group_by(.shape) | map([.[0].shape, (length|tostring)]) | sort_by(.[1] | tonumber) | reverse | .[]) | @csv
   ' "$json_file" > "$shapes_file"
   verbose "wrote region artifact dir '${out_dir}'"
+  local total
+  total="$(jq 'length' "$json_file")"
+  verbose "Done. ${total} instances in ${region}."
 }
 
 merge_compute_regions() {
@@ -841,6 +865,9 @@ merge_compute_regions() {
     (group_by(.shape) | map([.[0].shape, (length|tostring)]) | sort_by(.[1] | tonumber) | reverse | .[]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_shapes_summary.csv
   verbose "wrote 'report/compute/compute_shapes_summary.csv'"
+  local total
+  total="$(jq 'length' report/compute/compute_instances.json)"
+  log "Done. ${total} total instances."
 }
 
 build_storage_region() {
@@ -892,6 +919,9 @@ prepare_storage_region() {
     [[ -n "$cid" ]] || continue
     printf '%s,%s,%s\n' "$region" "$cid" "$cpath" >> "${out_dir}/storage_target_compartments.csv"
   done < "$merged_targets"
+  local total
+  total="$(wc -l < "$cid_file" | tr -d ' ')"
+  verbose "Done. ${total} target compartments for ${region}."
 
 }
 
@@ -968,6 +998,9 @@ merge_storage_region() {
     (.[] | [.region,.compartmentPath,.kind,.displayName,.lifecycleState,.availabilityDomain,.sizeInGBs,.vpusPerGB,.autoTuneEnabled,.backupPolicyId,.backupCount,.latestBackupTime,.latestBackupType,.replicaCount,.drProtection,.kmsKeyId,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.id]) | @csv
   ' "${out_dir}/storage_inventory_enriched.json" > "${out_dir}/storage_inventory.csv"
   verbose "wrote region artifact dir '${out_dir}'"
+  local total
+  total="$(jq 'length' "${out_dir}/storage_inventory_enriched.json")"
+  verbose "Done. ${total} disks in ${region}."
 }
 
 merge_storage_regions() {
@@ -1050,6 +1083,9 @@ merge_storage_regions() {
     ) | @csv
   ' report/storage/storage_inventory_enriched.json > report/storage/storage_inventory.csv
   verbose "wrote 'report/storage/storage_inventory.csv'"
+  local total
+  total="$(jq 'length' report/storage/storage_inventory_enriched.json)"
+  log "Done. ${total} disks."
 }
 
 build_limits_region() {
@@ -1073,6 +1109,7 @@ build_limits_region() {
   if [[ "$(jq 'length' "$compute_region_json")" -eq 0 ]] && [[ "$(jq 'length' "$storage_region_json")" -eq 0 ]]; then
     echo "[]" > "${out_dir}/service_limits.json"
     jq -n -r '["region","service-name","limit-name","scope-type","availability-domain","limit-value","used","available","usage-percent"] | @csv' > "${out_dir}/service_limits.csv"
+    verbose "Done. 0 limits in ${region}."
     return 0
   fi
 
@@ -1112,6 +1149,9 @@ build_limits_region() {
   jq -s 'def to_num: if . == null or . == "" then null else (try (tonumber) catch null) end; def pct($u; $l): if $u == null or $l == null or $l == 0 then null else (($u / $l) * 100) end; map(. as $r | ($r.limitValue | to_num) as $limit | ($r.used | to_num) as $used | ($r.available | to_num) as $avail | (pct($used; $limit)) as $pct | {region: $r.region, serviceName: $r.serviceName, limitName: $r.limitName, scopeType: $r.scopeType, availabilityDomain: $r.availabilityDomain, limitValue: $limit, used: $used, available: $avail, usagePercent: $pct}) | sort_by(-( .usagePercent // -1 ), .region, .serviceName, .limitName)' "$rows_jsonl" > "${out_dir}/service_limits.json"
   jq -r '["region","service-name","limit-name","scope-type","availability-domain","limit-value","used","available","usage-percent"], (.[] | [.region,.serviceName,.limitName,.scopeType,.availabilityDomain,.limitValue,.used,.available,.usagePercent]) | @csv' "${out_dir}/service_limits.json" > "${out_dir}/service_limits.csv"
   verbose "wrote region artifact dir '${out_dir}'"
+  local total
+  total="$(tail -n +2 "${out_dir}/service_limits.csv" | wc -l | tr -d ' ')"
+  verbose "Done. ${total} limits in ${region}."
 }
 
 merge_limits_regions() {
@@ -1165,6 +1205,9 @@ merge_limits_regions() {
     ) | @csv
   ' report/limits/service_limits.json > report/limits/service_limits.csv
   verbose "wrote 'report/limits/service_limits.csv'"
+  local total
+  total="$(tail -n +2 report/limits/service_limits.csv | wc -l | tr -d ' ')"
+  log "Done. ${total} limits."
 }
 
 build_limits() {
@@ -1222,7 +1265,7 @@ build_limits() {
         fi
       fi
 
-      progress_prefix "build_limits ${region}/${service_name}"
+      verbose "build_limits ${region}/${service_name}"
       local had_limit_iterations="false"
 
       oci_cli limits value list \
@@ -1363,6 +1406,9 @@ build_limits() {
     ) | @csv
   ' report/limits/service_limits.json > report/limits/service_limits.csv
   verbose "wrote 'report/limits/service_limits.csv'"
+
+  total="$(tail -n +2 report/limits/service_limits.csv | wc -l | tr -d ' ')"
+  log "Done. ${total} limits."
 }
 
 build_storage() {
@@ -1410,7 +1456,7 @@ build_storage() {
       printf '%s,%s,%s\n' "$region" "$cid" "$cpath" >> report/storage/storage_target_compartments.csv
     done < "$merged_targets"
 
-    progress_prefix "build_storage ${region}"
+    verbose "build_storage ${region}"
     local had_iterations="false"
     while IFS=',' read -r cid _; do
       [[ "$cid" == "compartment-id" ]] && continue
@@ -1634,6 +1680,9 @@ build_storage() {
     ) | @csv
   ' report/storage/storage_inventory_enriched.json > report/storage/storage_inventory.csv
   verbose "wrote 'report/storage/storage_inventory.csv'"
+
+  total="$(tail -n +2 report/storage/storage_inventory.csv | wc -l | tr -d ' ')"
+  log "Done. ${total} disks."
 }
 
 main() {
