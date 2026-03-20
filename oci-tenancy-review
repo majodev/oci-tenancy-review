@@ -463,36 +463,59 @@ search() {
 }
 
 build_policies() {
+  local cid
+  prepare_policies
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    build_policy_compartment "$cid" "report/policies/compartments/${cid}.jsonl"
+  done < report/policies/.policy_cids.txt
+  merge_policies
+}
+
+prepare_policies() {
   init_report_dirs
   require_tenancy
   ensure_compartments
+
+  mkdir -p report/policies/compartments
+  rm -f report/policies/compartments/*.jsonl
 
   search \
     "query policy resources" \
     "report/policies/policy_target_compartments.csv"
 
-  > report/policies/policies_all_compartments.jsonl
-  progress_prefix "build_policies processing"
-  local had_policy_iterations="false"
-  while IFS=',' read -r cid _; do
-    [[ "$cid" == "compartment-id" ]] && continue
-    [[ -n "$cid" ]] || continue
-    had_policy_iterations="true"
-    cpath="$(get_compartment_path "$cid")"
-    oci_cli iam policy list -c "$cid" --all --output json \
-      | jq -c --arg cid "$cid" --arg cpath "$cpath" '
-          .data[]? | {
-            compartmentId: $cid,
-            compartmentPath: $cpath,
-            name: .name,
-            id: .id,
-            timeCreated: ."time-created",
-            definedTags: ."defined-tags",
-            statements: .statements
-          }
-        ' >> report/policies/policies_all_compartments.jsonl
-  done < report/policies/policy_target_compartments.csv
-  :
+  awk -F',' 'NR>1 && $1 != "" {print $1}' report/policies/policy_target_compartments.csv > report/policies/.policy_cids.txt
+}
+
+build_policy_compartment() {
+  local cid="$1"
+  local out_file="$2"
+  local cpath
+  cpath="$(get_compartment_path "$cid")"
+  oci_cli iam policy list -c "$cid" --all --output json \
+    | jq -c --arg cid "$cid" --arg cpath "$cpath" '
+        .data[]? | {
+          compartmentId: $cid,
+          compartmentPath: $cpath,
+          name: .name,
+          id: .id,
+          timeCreated: ."time-created",
+          definedTags: ."defined-tags",
+          statements: .statements
+        }
+      ' > "$out_file"
+}
+
+merge_policies() {
+  local -a policy_parts
+  mkdir -p report/policies/compartments
+  : > report/policies/policies_all_compartments.jsonl
+  shopt -s nullglob
+  policy_parts=(report/policies/compartments/*.jsonl)
+  shopt -u nullglob
+  if [[ "${#policy_parts[@]}" -gt 0 ]]; then
+    cat "${policy_parts[@]}" >> report/policies/policies_all_compartments.jsonl
+  fi
 
   jq -s '.' report/policies/policies_all_compartments.jsonl > report/policies/policies_all_compartments.json
   verbose "wrote 'report/policies/policies_all_compartments.json'"
@@ -1650,6 +1673,10 @@ main() {
   require_cmd sort
 
   case "$cmd" in
+    _policy-compartment)
+      [[ "${#cmd_args[@]}" -eq 2 ]] || fatal "Usage: _policy-compartment <compartment-ocid> <out-file>"
+      build_policy_compartment "${cmd_args[0]}" "${cmd_args[1]}"
+      ;;
     _compute-compartment)
       [[ "${#cmd_args[@]}" -eq 3 ]] || fatal "Usage: _compute-compartment <region> <compartment-ocid> <out-file>"
       build_compute_compartment_region "${cmd_args[0]}" "${cmd_args[1]}" "${cmd_args[2]}"
@@ -1681,6 +1708,12 @@ main() {
       ;;
     policies)
       build_policies
+      ;;
+    policies-prepare)
+      prepare_policies
+      ;;
+    policies-merge)
+      merge_policies
       ;;
     compute)
       build_compute

@@ -520,6 +520,7 @@ EOF
   cd "$BATS_TEST_DIRNAME/.."
   run make -pn all
   [ "$status" -eq 0 ]
+  [[ "$output" == *"policy-compartment-%:"* ]]
   [[ "$output" == *"compute-compartment-%:"* ]]
   [[ "$output" == *"block-storage-compartment-%:"* ]]
 }

@@ -13,7 +13,13 @@ compartments:
 	@$(SCRIPT) compartments
 
 policies: compartments
-	@$(SCRIPT) policies
+	@$(SCRIPT) policies-prepare
+	@targets="$$(awk 'NF {print "policy-compartment-"$$1}' report/policies/.policy_cids.txt)"; \
+	if [[ -n "$$targets" ]]; then $(MAKE) $$targets; fi
+	@$(SCRIPT) policies-merge
+
+policy-compartment-%:
+	@cid="$*"; $(SCRIPT) _policy-compartment "$$cid" "report/policies/compartments/$$cid.jsonl"
 
 compute: compartments regions
 	@regions="$$(awk 'NF {print "compute-region-"$$0}' report/regions.txt)"; \
