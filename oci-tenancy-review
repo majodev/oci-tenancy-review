@@ -87,20 +87,11 @@ fatal() {
 
 
 progress_dot() {
-  [[ "$DEBUG_MODE" == "true" ]] || printf '.' >&2
+  printf '.' >&2
 }
 
 progress_prefix() {
-  local message="$1"
-  [[ "$DEBUG_MODE" == "true" ]] || printf '%b[I] %s %b' "$COLOR_GREEN" "$message" "$COLOR_END" >&2
-}
-
-progress_newline() {
-  if [[ "$DEBUG_MODE" == "true" ]]; then
-    return 0
-  fi
-  printf '\n' >&2
-  return 0
+  verbose "$1"
 }
 
 require_cmd() {
@@ -129,6 +120,7 @@ oci_cli() {
   local jitter_seconds
   local wait_seconds
 
+  progress_dot
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-stderr.XXXXXX")"
   if command oci "$@" 2>"$stderr_file"; then
     rc=0
@@ -156,6 +148,7 @@ oci_cli() {
     wait_seconds=$((bailout_seconds + jitter_seconds))
     warn "oci call rate-limited; retrying once after ${wait_seconds}s: oci $*"
     sleep "$wait_seconds"
+    progress_dot
     command oci "$@"
     return $?
   fi
@@ -227,24 +220,19 @@ filter_reachable_regions() {
   local region
   local had_iterations="false"
   for region in "$@"; do
-    progress_dot
     had_iterations="true"
     [[ -n "$region" ]] || continue
     if is_blacklisted_region "$region"; then
-      progress_newline
       warn "Skipping blacklisted region: $region"
       continue
     fi
     if is_region_reachable "$region"; then
       echo "$region"
     else
-      progress_newline
       warn "Skipping unreachable region: $region"
     fi
   done
-  if [[ "$had_iterations" == "true" ]]; then
-    progress_newline
-  fi
+  [[ "$had_iterations" == "true" ]] || true
 }
 
 resolve_target_regions() {
@@ -402,7 +390,6 @@ search() {
     progress_prefix "search '${query_text}' ${region:-default-region} processing"
     local had_iterations="false"
     while true; do
-      progress_dot
       had_iterations="true"
       if [[ -n "$region" && -n "$page" ]]; then
         oci_cli search resource structured-search \
@@ -452,7 +439,7 @@ search() {
       page="$(jq -r '."opc-next-page" // empty' "$resp_file")"
       [[ -z "$page" ]] && break
     done
-    progress_newline
+    :
   done
 
   sort -u "$ids_file" -o "$ids_file"
@@ -490,7 +477,6 @@ build_policies() {
   while IFS=',' read -r cid _; do
     [[ "$cid" == "compartment-id" ]] && continue
     [[ -n "$cid" ]] || continue
-    progress_dot
     had_policy_iterations="true"
     cpath="$(get_compartment_path "$cid")"
     oci_cli iam policy list -c "$cid" --all --output json \
@@ -506,7 +492,7 @@ build_policies() {
           }
         ' >> report/policies/policies_all_compartments.jsonl
   done < report/policies/policy_target_compartments.csv
-  progress_newline
+  :
 
   jq -s '.' report/policies/policies_all_compartments.jsonl > report/policies/policies_all_compartments.json
   verbose "wrote 'report/policies/policies_all_compartments.json'"
@@ -550,7 +536,6 @@ build_compute() {
     while IFS=',' read -r cid _; do
       [[ "$cid" == "compartment-id" ]] && continue
       [[ -n "$cid" ]] || continue
-      progress_dot
       had_compute_iterations="true"
       cpath="$(get_compartment_path "$cid")"
       oci_cli compute instance list --compartment-id "$cid" --all --region "$region" --output json \
@@ -589,7 +574,7 @@ build_compute() {
             }
           ' >> report/compute/compute_instances.jsonl
     done < "$region_target_file"
-    progress_newline
+    :
   done
 
   jq -s '.' report/compute/compute_instances.jsonl > report/compute/compute_instances.json
@@ -624,13 +609,6 @@ script_path() {
   local dir
   dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
   printf '%s/%s\n' "$dir" "$(basename "${BASH_SOURCE[0]}")"
-}
-
-get_compartment_parallelism() {
-  local n="${OCI_REVIEW_COMPARTMENT_PARALLELISM:-1}"
-  [[ "$n" =~ ^[0-9]+$ ]] || fatal "OCI_REVIEW_COMPARTMENT_PARALLELISM must be a positive integer"
-  (( n >= 1 )) || fatal "OCI_REVIEW_COMPARTMENT_PARALLELISM must be >= 1"
-  printf '%s\n' "$n"
 }
 
 build_compute_compartment_region() {
@@ -1238,7 +1216,6 @@ build_limits() {
             continue
           fi
         fi
-        progress_dot
         had_limit_iterations="true"
 
         local ra_json
@@ -1300,7 +1277,7 @@ build_limits() {
           | @tsv
         ' "$values_file"
       )
-      progress_newline
+      :
       [[ "$had_limit_iterations" == "true" ]] || true
       rm -f "$values_file" "$prefixes_file"
     done
@@ -1415,7 +1392,6 @@ build_storage() {
     while IFS=',' read -r cid _; do
       [[ "$cid" == "compartment-id" ]] && continue
       [[ -n "$cid" ]] || continue
-      progress_dot
       had_iterations="true"
 
       cpath="$(get_compartment_path "$cid")"
@@ -1500,7 +1476,7 @@ build_storage() {
             } | select(.sourceId != "")
           ' >> report/storage/boot_replicas.jsonl
     done < "$merged_targets"
-    progress_newline
+    :
     [[ "$had_iterations" == "true" ]] || true
 
     rm -f "$volume_targets" "$boot_targets" "$merged_targets"
