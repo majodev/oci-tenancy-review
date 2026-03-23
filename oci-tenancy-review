@@ -13,7 +13,7 @@ COLOR_END=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0m" || printf "")
 
 usage() {
   cat <<USAGE
-Usage: ./oci-tenancy-review <command> [<command> ...] [-d|--debug]
+Usage: ./oci-tenancy-review <command> [<command> ...]
 Version: ${VERSION}
 
 Commands:
@@ -41,6 +41,7 @@ Note:
 Required environment:
   TENANCY_OCID   Tenancy OCID (ocid1.tenancy...)
 Optional environment:
+  DEBUG         Set to 'true' to enable bash xtrace output.
   OCI_REVIEW_REGIONS  Comma-separated region list for compute discovery (for example: eu-frankfurt-1,eu-zurich-1).
                       If unset, all subscribed regions are used.
   BLACKLISTED_REGIONS Comma-separated region blacklist for compute discovery.
@@ -60,7 +61,7 @@ Examples:
   ./oci-tenancy-review limits
   ./oci-tenancy-review limits-region eu-frankfurt-1
   ./oci-tenancy-review limits-merge
-  ./oci-tenancy-review compute --debug
+  DEBUG=true ./oci-tenancy-review compute
   ./oci-tenancy-review compute block-storage limits
   ./oci-tenancy-review all
 USAGE
@@ -117,7 +118,11 @@ run_make_targets() {
   effective_makeflags="${MAKEFLAGS:--j 8 --no-print-directory}"
   require_cmd make
   log "MAKEFLAGS='${effective_makeflags}' make $*"
-  MAKEFLAGS="$effective_makeflags" command make "$@"
+  if [[ "$DEBUG_MODE" == "true" ]]; then
+    DEBUG=true MAKEFLAGS="$effective_makeflags" command make "$@"
+  else
+    MAKEFLAGS="$effective_makeflags" command make "$@"
+  fi
 }
 
 is_rate_limited_error() {
@@ -1193,9 +1198,6 @@ main() {
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      -d|--debug)
-        DEBUG_MODE="true"
-        ;;
       help|-h|--help)
         if [[ -z "$cmd" ]]; then
           cmd="help"
@@ -1212,6 +1214,10 @@ main() {
 
   if [[ "${#positional[@]}" -eq 0 ]]; then
     positional=("help")
+  fi
+
+  if [[ "${DEBUG:-false}" == "true" ]]; then
+    DEBUG_MODE="true"
   fi
 
   [[ "$DEBUG_MODE" == "true" ]] && set -x

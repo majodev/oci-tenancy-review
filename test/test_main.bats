@@ -534,11 +534,11 @@ EOF
   [ -f report/storage/regions/eu-frankfurt-1/storage_inventory_enriched.json ]
 }
 
-@test "debug mode enables bash xtrace output" {
+@test "DEBUG=true enables bash xtrace output" {
   cd "$WORKDIR"
   export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
 
-  run "$SCRIPT_PATH" compute --debug
+  run env DEBUG=true "$SCRIPT_PATH" compute
   [ "$status" -eq 0 ]
   [[ "$output" == *"+ oci iam region-subscription list --tenancy-id ocid1.tenancy.oc1..tenancy --all --output json"* ]]
 }

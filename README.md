@@ -173,7 +173,7 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 ./oci-tenancy-review policies
 
 # Enable debug shell tracing (-x)
-./oci-tenancy-review compute --debug
+DEBUG=true ./oci-tenancy-review compute
 ```
 
 Notes:
