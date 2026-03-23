@@ -1,3 +1,4 @@
+# This Makefile is used to enable concurrent job execution (-j 8) by a fan-out mechanism on regions -> compartment level. 
 # Default target when running `make` without arguments.
 .DEFAULT_GOAL := all
 
@@ -7,7 +8,7 @@ SHELL := /bin/bash
 
 SCRIPT := ./oci-tenancy-review
 
-all: compartments policies compute block-storage limits
+all: compute block-storage limits policies
 
 compartments:
 	@$(SCRIPT) compartments
@@ -62,23 +63,7 @@ limits-region-%:
 regions:
 	@$(SCRIPT) regions
 
-clean:
-	rm -rf report report.tar.gz
-
-help:
-	@echo "usage: make <target>"
-	@echo ""
-	@echo "targets:"
-	@echo "  all            Run complete review with dependency-aware scheduling"
-	@echo "  compartments   Build report/compartments.csv"
-	@echo "  policies       Build report/policies/policy_statements.csv"
-	@echo "  compute        Build report/compute/compute_instances.csv"
-	@echo "  compute-region-<region> Fetch compute for a single region"
-	@echo "  block-storage  Build report/storage/storage_inventory.csv"
-	@echo "  block-storage-region-<region> Fetch storage for a single region"
-	@echo "  limits         Build report/limits/service_limits.csv"
-	@echo "  limits-region-<region> Fetch limits for a single region"
-	@echo "  regions        Build report/regions.txt"
-	@echo "  clean          Remove report artifacts"
-
-.PHONY: all compartments policies compute block-storage limits regions clean help
+.PHONY: all policies compute block-storage limits \
+	policy-compartment-% compute-region-% compute-compartment-% \
+	block-storage-region-% block-storage-compartment-% limits-region-% \
+	compartments regions

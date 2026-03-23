@@ -13,7 +13,7 @@ COLOR_END=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0m" || printf "")
 
 usage() {
   cat <<USAGE
-Usage: ./oci-tenancy-review <command> [-d|--debug]
+Usage: ./oci-tenancy-review <command> [<command> ...] [-d|--debug]
 Version: ${VERSION}
 
 Commands:
@@ -31,6 +31,12 @@ Commands:
   limits-merge   Merge region limits artifacts into report/limits/service_limits.csv
   all            Run compartments + policies + compute + block-storage + limits
   help           Show this help
+
+Note:
+  Command 'all' is always orchestrated through Make.
+  Parallel workflow commands (policies, compute, block-storage, limits)
+  are orchestrated through Make when a local Makefile is present.
+  Default MAKEFLAGS when unset: -j 8 --no-print-directory
 
 Required environment:
   TENANCY_OCID   Tenancy OCID (ocid1.tenancy...)
@@ -55,6 +61,7 @@ Examples:
   ./oci-tenancy-review limits-region eu-frankfurt-1
   ./oci-tenancy-review limits-merge
   ./oci-tenancy-review compute --debug
+  ./oci-tenancy-review compute block-storage limits
   ./oci-tenancy-review all
 USAGE
 }
@@ -92,6 +99,25 @@ progress_network_call_request() {
 
 require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
+}
+
+is_make_routed_target() {
+  case "$1" in
+    all|policies|compute|block-storage|limits)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_make_targets() {
+  local effective_makeflags
+  effective_makeflags="${MAKEFLAGS:--j 8 --no-print-directory}"
+  require_cmd make
+  log "MAKEFLAGS='${effective_makeflags}' make $*"
+  MAKEFLAGS="$effective_makeflags" command make "$@"
 }
 
 is_rate_limited_error() {
@@ -1168,9 +1194,11 @@ build_storage() {
 }
 
 main() {
-  local cmd=""
+  local cmd
   local -a cmd_args
+  local -a positional
   cmd_args=()
+  positional=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -1185,18 +1213,33 @@ main() {
         fi
         ;;
       *)
-        if [[ -z "$cmd" ]]; then
-          cmd="$1"
-        else
-          cmd_args+=("$1")
-        fi
+        positional+=("$1")
         ;;
     esac
     shift
   done
 
-  [[ -n "$cmd" ]] || cmd="help"
+  if [[ "${#positional[@]}" -eq 0 ]]; then
+    positional=("help")
+  fi
+
   [[ "$DEBUG_MODE" == "true" ]] && set -x
+
+  local token
+  local all_make_routed="true"
+  for token in "${positional[@]}"; do
+    if ! is_make_routed_target "$token"; then
+      all_make_routed="false"
+      break
+    fi
+  done
+  if [[ "$all_make_routed" == "true" && ("${positional[0]}" == "all" || -f Makefile) ]]; then
+    run_make_targets "${positional[@]}"
+    return
+  fi
+
+  cmd="${positional[0]}"
+  cmd_args=("${positional[@]:1}")
 
   require_cmd oci
   require_cmd jq
@@ -1275,13 +1318,6 @@ main() {
       merge_limits_regions
       ;;
     limits)
-      build_limits
-      ;;
-    all)
-      build_compartments
-      build_policies
-      build_compute
-      build_storage
       build_limits
       ;;
     help|-h|--help)

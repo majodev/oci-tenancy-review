@@ -2,12 +2,41 @@
 
 > **DISCLAIMER** - This is not an official Oracle application. It is not supported by Oracle Support.
 
-This repository provides a single shell script to generate OCI tenancy review artifacts under `report/`.
-This script is compatible with OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm).
+This repository provides `./oci-tenancy-review`, a CLI tool to easily generate OCI tenancy bill of materials as CSVs under `report/`, compatible with [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm).
+
+The focus of this CLI is **speed** (and concurrent execution) of very specific domains (compute, block-storage, limits, policies) rather than providing a complete view of a whole OCI tenancy.
+
+- [OCI Tenancy Review](#oci-tenancy-review)
+  - [Prerequisites](#prerequisites)
+  - [Setup](#setup)
+    - [Set tenancy OCID (required)](#set-tenancy-ocid-required)
+      - [Option 1: OCI Cloud Shell](#option-1-oci-cloud-shell)
+      - [Option 2: Local ENV](#option-2-local-env)
+      - [Option 3: Set manually](#option-3-set-manually)
+  - [Usage](#usage)
+    - [Optional: set target region(s) for discovery](#optional-set-target-regions-for-discovery)
+    - [Optional: run a specific reporter](#optional-run-a-specific-reporter)
+  - [Exported Files](#exported-files)
+    - [`report/regions.txt`](#reportregionstxt)
+    - [`report/compartments.csv`](#reportcompartmentscsv)
+    - [`report/policies/policy_statements.csv`](#reportpoliciespolicy_statementscsv)
+    - [`report/compute/compute_instances.csv`](#reportcomputecompute_instancescsv)
+    - [`report/compute/compute_shapes_summary.csv`](#reportcomputecompute_shapes_summarycsv)
+    - [`report/storage/storage_inventory.csv`](#reportstoragestorage_inventorycsv)
+    - [`report/limits/service_limits.csv`](#reportlimitsservice_limitscsv)
+    - [Per-Region Reports](#per-region-reports)
+  - [Tests](#tests)
+  - [Alternatives](#alternatives)
+
 
 ## Prerequisites
 
-If running in OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) everything is already preconfigured for you. For local runs, ensure [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm) and [jq](https://github.com/jqlang/jq) is installed.
+If running in OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) all tooling is already available.
+
+For local runs, ensure the following is installed and configured:
+* [jq](https://github.com/jqlang/jq)
+* [OCI CLI](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cliconcepts.htm)
+* UNIX tooling like `bash`, GNU `make`, `awk`, `sort`
 
 ## Setup
 
@@ -42,7 +71,7 @@ echo "Your tenancy ocid is: '${TENANCY_OCID}'"
 
 #### Option 2: Local ENV
 
-Read tenancy OCID from ~/.oci/config (uses OCI_CLI_PROFILE or DEFAULT)
+Read tenancy OCID from ~/.oci/config (uses `OCI_CLI_PROFILE` or `DEFAULT`)
 
 ```bash
 OCI_PROFILE="${OCI_CLI_PROFILE:-DEFAULT}"
@@ -74,14 +103,15 @@ echo "Your tenancy ocid is: '${TENANCY_OCID}'"
 # Run all reports
 ./oci-tenancy-review all
 
-# Or run dependency-aware make graph (parallel-safe)
-MAKEFLAGS="-j 8 --no-print-directory" make all
-
 # Your reports are now available in the report subfolder
 # If you are within a OCI cloud shell, you may want to archive this folder to easily download it
 tar -czvf report.tar.gz report
 
 ```
+
+`oci-tenancy-review` is the user-facing entrypoint. For workflow commands (`all`, `policies`,
+`compute`, `block-storage`, `limits`) it internally executes the dependency-aware Make graph.
+By default it uses `MAKEFLAGS="-j 4 --no-print-directory"` when `MAKEFLAGS` is unset.
 
 If you used OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) to execute the above, you should now be able to download the archived report by navigating to "Cog -> Download" (top right) and targeting this file:
 ```
@@ -112,6 +142,9 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 ### Optional: run a specific reporter
 
 ```bash
+# Run selected workflow domains
+./oci-tenancy-review compute block-storage
+
 # Build report/regions.txt (reachable, non-blacklisted target regions)
 ./oci-tenancy-review regions
 
@@ -162,14 +195,6 @@ CSV header:
 - `compartment-id`
 - `compartment-path`
 
-### `report/policies/policy_target_compartments.csv`
-
-CSV header:
-- `compartment-id`
-- `compartment-path`
-
-Contains the filtered compartment list used for policy collection.
-
 ### `report/policies/policy_statements.csv`
 
 CSV header:
@@ -180,18 +205,6 @@ CSV header:
 - `time-created`
 - `the actual statement` (one row per statement)
 - `id` (policy OCID)
-
-### `report/compute/compute_target_compartments.csv`
-
-CSV header:
-- `compartment-id`
-- `compartment-path`
-
-Contains the filtered compartment list used for compute instance collection.
-
-When multi-region mode is used, this is split into
-per-region files:
-- `report/compute/compute_target_compartments_<region>.csv`
 
 ### `report/compute/compute_instances.csv`
 
@@ -260,15 +273,6 @@ CSV header:
 
 This report is designed for storage overview plus DR/failure-mode discovery (backup and replication coverage).
 
-### `report/storage/storage_target_compartments.csv`
-
-CSV header:
-- `region`
-- `compartment-id`
-- `compartment-path`
-
-Single consolidated target-compartment list for block/boot storage discovery across all inspected regions.
-
 ### `report/limits/service_limits.csv`
 
 CSV header:
@@ -285,6 +289,15 @@ CSV header:
 Rows are ordered by `usage-percent` descending, then region/service/limit.
 This report currently focuses on compute and block-storage service limits.
 
+### Per-Region Reports
+
+When region workflows are used (for example via `compute`, `block-storage`, `limits`), each domain
+also writes per-region artifacts:
+
+- `report/compute/regions/<region>/compute_instances.csv`
+- `report/storage/regions/<region>/storage_inventory.csv`
+- `report/limits/regions/<region>/service_limits.csv`
+
 ## Tests
 
 Bats tests are under `test/test_main.bats`.
@@ -292,3 +305,7 @@ Bats tests are under `test/test_main.bats`.
 ```bash
 bats test/test_main.bats
 ```
+
+## Alternatives
+
+* [oci-python-sdk/examples/showoci](https://github.com/oracle/oci-python-sdk/blob/master/examples/showoci/README.md): More complete (but slower) continuous view of a customer tenancy.
