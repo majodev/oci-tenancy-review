@@ -102,29 +102,6 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
 }
 
-is_make_routed_target() {
-  case "$1" in
-    all|policies|compute|block-storage|limits)
-      return 0
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-run_make_targets() {
-  local effective_makeflags
-  effective_makeflags="${MAKEFLAGS:--j 8}"
-  require_cmd make
-  log "MAKEFLAGS='${effective_makeflags}' make $*"
-  if [[ "$DEBUG_MODE" == "true" ]]; then
-    DEBUG=true MAKEFLAGS="$effective_makeflags" command make "$@"
-  else
-    MAKEFLAGS="$effective_makeflags" command make "$@"
-  fi
-}
-
 is_rate_limited_error() {
   local msg="$1"
   local msg_lc
@@ -1189,6 +1166,32 @@ build_storage() {
   merge_storage_regions
 }
 
+is_make_routed_target() {
+  case "$1" in
+    all|regions|compartments|policies|compute|block-storage|limits)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+run_make_targets() {
+  local makefile_path
+  local effective_makeflags
+  makefile_path="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/Makefile"
+  effective_makeflags="${MAKEFLAGS:--j 8}"
+  require_cmd make
+  [[ -f "$makefile_path" ]] || fatal "Missing Makefile: $makefile_path"
+  log "MAKEFLAGS='${effective_makeflags}' make $*"
+  if [[ "$DEBUG_MODE" == "true" ]]; then
+    DEBUG=true command make -f "$makefile_path" $effective_makeflags "$@"
+  else
+    command make -f "$makefile_path" $effective_makeflags "$@"
+  fi
+}
+
 main() {
   local cmd
   local -a cmd_args
@@ -1230,9 +1233,14 @@ main() {
       break
     fi
   done
-  if [[ "$all_make_routed" == "true" && ("${positional[0]}" == "all" || -f Makefile) ]]; then
-    run_make_targets "${positional[@]}"
-    return
+  if [[ "$all_make_routed" == "true" ]]; then
+    # Avoid make -> script -> make recursion for top-level targets invoked by Make recipes.
+    if [[ "${MAKELEVEL:-0}" -eq 0 ]]; then
+      run_make_targets "${positional[@]}"
+      return
+    fi
+  elif [[ "${#positional[@]}" -gt 1 ]] && is_make_routed_target "${positional[0]}"; then
+    fatal "Invalid make target list: ${positional[*]}. Valid make-routed targets are: all regions compartments policies compute block-storage limits"
   fi
 
   cmd="${positional[0]}"
@@ -1244,6 +1252,12 @@ main() {
   require_cmd sort
 
   case "$cmd" in
+    _regions)
+      build_regions
+      ;;
+    _compartments)
+      build_compartments
+      ;;
     _policy-compartment)
       [[ "${#cmd_args[@]}" -eq 2 ]] || fatal "Usage: _policy-compartment <compartment-ocid> <out-file>"
       build_policy_compartment "${cmd_args[0]}" "${cmd_args[1]}"
@@ -1255,9 +1269,6 @@ main() {
     _storage-compartment)
       [[ "${#cmd_args[@]}" -eq 3 ]] || fatal "Usage: _storage-compartment <region> <compartment-ocid> <out-prefix>"
       build_storage_compartment_region "${cmd_args[0]}" "${cmd_args[1]}" "${cmd_args[2]}"
-      ;;
-    regions)
-      build_regions
       ;;
     compute-region)
       [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for compute-region"
@@ -1274,20 +1285,11 @@ main() {
     compute-merge)
       merge_compute_regions
       ;;
-    compartments)
-      build_compartments
-      ;;
-    policies)
-      build_policies
-      ;;
     policies-prepare)
       prepare_policies
       ;;
     policies-merge)
       merge_policies
-      ;;
-    compute)
-      build_compute
       ;;
     block-storage-region)
       [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for block-storage-region"
@@ -1304,18 +1306,12 @@ main() {
     block-storage-merge)
       merge_storage_regions
       ;;
-    block-storage)
-      build_storage
-      ;;
     limits-region)
       [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for limits-region"
       build_limits_region "${cmd_args[0]}"
       ;;
     limits-merge)
       merge_limits_regions
-      ;;
-    limits)
-      build_limits
       ;;
     help|-h|--help)
       usage
