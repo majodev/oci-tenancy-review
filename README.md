@@ -11,8 +11,8 @@ We focus on **speed by concurrently scraping specific OCI domains** (e.g. comput
   - [Setup](#setup)
     - [Set tenancy OCID (required)](#set-tenancy-ocid-required)
   - [Usage](#usage)
-    - [Optional: set target region(s) for discovery](#optional-set-target-regions-for-discovery)
-    - [Optional: run a specific reporter](#optional-run-a-specific-reporter)
+    - [Setting target region(s) for discovery](#setting-target-regions-for-discovery)
+    - [Run a specific reporter](#run-a-specific-reporter)
   - [Exported Files](#exported-files)
     - [`report/regions.txt`](#reportregionstxt)
     - [`report/compartments.csv`](#reportcompartmentscsv)
@@ -119,18 +119,18 @@ tar -czvf report.tar.gz report
 
 ```
 
-`oci-tenancy-review` is the user-facing entrypoint. For workflow commands (`all`, `policies`,
-`compute`, `block-storage`, `limits`) it internally executes the dependency-aware Make graph.
-By default it uses `MAKEFLAGS="-j 8"` when `MAKEFLAGS` is unset.
-
 If you used OCI [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) to execute the above, you should now be able to download the archived report by navigating to "Cog -> Download" (top right) and targeting this file:
 ```
 oci-tenancy-review/report.tar.gz
 ```
 
-### Optional: set target region(s) for discovery
+Now inspect all .csv files in that archive.
 
-If `REGIONS` is unset, discovery runs in all subscribed regions.
+---
+
+### Setting target region(s) for discovery
+
+If `REGIONS` is unset, discovery runs in all subscribed regions (the default case).  
 Set `REGIONS` to override this and target one or more specific regions:
 
 ```bash
@@ -149,7 +149,7 @@ By default, `eu-kragujevac-1` is blacklisted. You can override blacklist regions
 export BLACKLISTED_REGIONS="eu-amsterdam-1"
 ```
 
-### Optional: run a specific reporter
+### Run a specific reporter
 
 ```bash
 # Run selected workflow domains
