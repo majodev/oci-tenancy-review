@@ -209,16 +209,22 @@ CSV header:
 
 CSV header:
 - `compartment-id`
-- `compartment-name` (human-readable compartment path)
+- `compartment-path` (human-readable path, `:` separated)
+- `statement-seq`
 - `policy-name`
+- `policy-statement` (one row per statement)
 - `created-by` (from defined tag `Oracle-Tags.CreatedBy` when present)
 - `time-created`
-- `the actual statement` (one row per statement)
+- `policy-lifecycle-state`
+- `policy-description`
+- `policy-freeform-tag-count`
+- `policy-defined-tag-namespace-count`
 - `id` (policy OCID)
 
 ### `report/compute/compute_instances.csv`
 
 CSV header:
+- `compartment-id`
 - `compartment-path`
 - `region`
 - `instance-name`
@@ -231,19 +237,30 @@ CSV header:
 - `fault-domain`
 - `image-id`
 - `launch-mode`
+- `launch-boot-volume-type`
+- `launch-firmware`
+- `launch-remote-data-volume-type`
 - `source-type`
 - `capacity-reservation-id`
 - `dedicated-vm-host-id`
+- `time-maintenance-reboot-due`
 - `preemptible-action-type`
 - `availability-recovery-action`
 - `legacy-imds-endpoints-disabled`
 - `network-type`
 - `consistent-volume-naming-enabled`
+- `all-plugins-disabled`
 - `monitoring-disabled`
 - `management-disabled`
 - `live-migration-preferred`
 - `pv-encryption-in-transit-enabled`
 - `metadata-key-count`
+- `extended-metadata-key-count`
+- `platform-type`
+- `platform-secure-boot-enabled`
+- `platform-tpm-enabled`
+- `platform-measured-boot-enabled`
+- `platform-memory-encryption-enabled`
 - `freeform-tag-count`
 - `defined-tag-namespace-count`
 - `time-created`
@@ -260,15 +277,21 @@ Shape distribution summary derived from `compute_instances.csv`.
 ### `report/storage/storage_inventory.csv`
 
 CSV header:
-- `region`
+- `compartment-id`
 - `compartment-path`
+- `region`
 - `kind` (`block-volume` or `boot-volume`)
 - `display-name`
 - `lifecycle-state`
 - `availability-domain`
 - `size-in-gbs`
 - `vpus-per-gb`
+- `is-hydrated`
 - `auto-tune-enabled`
+- `auto-tuned-vpus-per-gb`
+- `autotune-policy-count`
+- `volume-group-id`
+- `replica-ad-list`
 - `backup-policy-id`
 - `backup-count`
 - `latest-backup-time`
@@ -276,6 +299,7 @@ CSV header:
 - `replica-count`
 - `dr-protection` (`YES`/`NO`)
 - `kms-key-id`
+- `image-id` (boot volumes)
 - `freeform-tag-count`
 - `defined-tag-namespace-count`
 - `time-created`
@@ -295,6 +319,7 @@ CSV header:
 - `used`
 - `available`
 - `usage-percent`
+- `id` (stable key: `region:service-name:scope-type:availability-domain:limit-name`)
 
 Rows are ordered by `usage-percent` descending, then region/service/limit.
 This report currently focuses on compute and block-storage service limits.

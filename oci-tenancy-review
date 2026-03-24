@@ -116,6 +116,17 @@ is_rate_limited_error() {
   return 1
 }
 
+is_connection_timeout_error() {
+  local msg="$1"
+  local msg_lc
+  msg_lc="$(printf '%s' "$msg" | tr '[:upper:]' '[:lower:]')"
+
+  [[ "$msg_lc" == *"requestexception"* ]] || return 1
+  [[ "$msg_lc" == *"connection to endpoint timed out"* ]] && return 0
+  [[ "$msg_lc" == *"timed out"* ]] && return 0
+  return 1
+}
+
 oci_cli() {
   local stderr_file
   local rc
@@ -152,6 +163,17 @@ oci_cli() {
     jitter_seconds=$((RANDOM % 2))
     wait_seconds=$((bailout_seconds + jitter_seconds))
     warn "oci call rate-limited; retrying once after ${wait_seconds}s"
+    sleep "$wait_seconds"
+    progress_network_call_request
+    command oci "$@"
+    return $?
+  fi
+
+  if is_connection_timeout_error "$stderr_text"; then
+    bailout_seconds="${OCI_TIMEOUT_BAILOUT_SECONDS:-2}"
+    jitter_seconds=$((RANDOM % 2))
+    wait_seconds=$((bailout_seconds + jitter_seconds))
+    warn "oci call timed out; retrying once after ${wait_seconds}s"
     sleep "$wait_seconds"
     progress_network_call_request
     command oci "$@"
@@ -310,7 +332,7 @@ build_compartments() {
           ""
         else
           (full_path($m[$id]."compartment-id")) as $p
-          | if $p == "" then $m[$id].name else ($p + "." + $m[$id].name) end
+          | if $p == "" then $m[$id].name else ($p + ":" + $m[$id].name) end
         end;
       [ $d[] | {id: .id, path: (if .id == $tenancy then "root" else full_path(.id) end)} ]
     | sort_by(if .path == "root" then "" else .path end)
@@ -510,7 +532,10 @@ build_policy_compartment() {
           compartmentPath: $cpath,
           name: .name,
           id: .id,
+          description: (.description // ""),
+          lifecycleState: ."lifecycle-state",
           timeCreated: ."time-created",
+          freeformTags: ."freeform-tags",
           definedTags: ."defined-tags",
           statements: .statements
         }
@@ -532,9 +557,22 @@ merge_policies() {
   verbose "wrote 'report/policies/policies_all_compartments.json'"
 
   jq -r '
-    ["compartment-id","compartment-name","policy-name","created-by","time-created","the actual statement","id"],
-    (.[] as $p | ($p.statements // [])[] |
-      [$p.compartmentId, $p.compartmentPath, $p.name, ($p.definedTags["Oracle-Tags"]["CreatedBy"] // ""), $p.timeCreated, ., $p.id]
+    ["compartment-id","compartment-path","statement-seq","policy-name","policy-statement","created-by","time-created","policy-lifecycle-state","policy-description","policy-freeform-tag-count","policy-defined-tag-namespace-count","id"],
+    (.[] as $p | (($p.statements // []) | to_entries[]) as $s |
+      [
+        $p.compartmentId,
+        $p.compartmentPath,
+        ($s.key + 1),
+        $p.name,
+        $s.value,
+        ($p.definedTags["Oracle-Tags"]["CreatedBy"] // ""),
+        $p.timeCreated,
+        $p.lifecycleState,
+        ($p.description // ""),
+        (($p.freeformTags // {}) | keys | length),
+        (($p.definedTags // {}) | keys | length),
+        $p.id
+      ]
     ) | @csv
   ' report/policies/policies_all_compartments.json > report/policies/policy_statements.csv
   verbose "wrote 'report/policies/policy_statements.csv'"
@@ -600,16 +638,27 @@ build_compute_compartment_region() {
           sourceType: ."source-details"."source-type",
           capacityReservationId: ."capacity-reservation-id",
           dedicatedVmHostId: ."dedicated-vm-host-id",
+          timeMaintenanceRebootDue: ."time-maintenance-reboot-due",
           preemptibleActionType: ."preemptible-instance-config"."preemption-action"."type",
           availabilityRecoveryAction: ."availability-config"."recovery-action",
           legacyImdsEndpointsDisabled: ."instance-options"."are-legacy-imds-endpoints-disabled",
           networkType: ."launch-options"."network-type",
+          launchBootVolumeType: ."launch-options"."boot-volume-type",
+          launchFirmware: ."launch-options".firmware,
+          launchRemoteDataVolumeType: ."launch-options"."remote-data-volume-type",
           consistentVolumeNamingEnabled: ."launch-options"."is-consistent-volume-naming-enabled",
+          allPluginsDisabled: ."agent-config"."are-all-plugins-disabled",
           monitoringDisabled: ."agent-config"."is-monitoring-disabled",
           managementDisabled: ."agent-config"."is-management-disabled",
           liveMigrationPreferred: ."is-live-migration-preferred",
           pvEncryptionInTransitEnabled: ."is-pv-encryption-in-transit-enabled",
           metadataKeyCount: ((.metadata // {}) | keys | length),
+          extendedMetadataKeyCount: ((."extended-metadata" // {}) | keys | length),
+          platformType: ."platform-config".type,
+          platformSecureBootEnabled: ."platform-config"."is-secure-boot-enabled",
+          platformTrustedPlatformModuleEnabled: ."platform-config"."is-trusted-platform-module-enabled",
+          platformMeasuredBootEnabled: ."platform-config"."is-measured-boot-enabled",
+          platformMemoryEncryptionEnabled: ."platform-config"."is-memory-encryption-enabled",
           freeformTagCount: ((."freeform-tags" // {}) | keys | length),
           definedTagNamespaceCount: ((."defined-tags" // {}) | keys | length),
           timeCreated: ."time-created"
@@ -637,7 +686,13 @@ build_storage_compartment_region() {
           availabilityDomain: ."availability-domain",
           sizeInGBs: ."size-in-gbs",
           vpusPerGB: ."vpus-per-gb",
+          isHydrated: ."is-hydrated",
           autoTuneEnabled: ."is-auto-tune-enabled",
+          autoTunedVpusPerGB: ."auto-tuned-vpus-per-gb",
+          autotunePolicyCount: ((."autotune-policies" // []) | length),
+          volumeGroupId: ."volume-group-id",
+          replicaAdList: ((."block-volume-replicas" // []) | map(."availability-domain") | map(select(. != null and . != "")) | join("|")),
+          imageId: null,
           kmsKeyId: ."kms-key-id",
           backupPolicyId: ."backup-policy-id",
           freeformTagCount: ((."freeform-tags" // {}) | keys | length),
@@ -659,7 +714,13 @@ build_storage_compartment_region() {
           availabilityDomain: ."availability-domain",
           sizeInGBs: ."size-in-gbs",
           vpusPerGB: null,
+          isHydrated: ."is-hydrated",
           autoTuneEnabled: null,
+          autoTunedVpusPerGB: ."auto-tuned-vpus-per-gb",
+          autotunePolicyCount: ((."autotune-policies" // []) | length),
+          volumeGroupId: ."volume-group-id",
+          replicaAdList: ((."boot-volume-replicas" // []) | map(."availability-domain") | map(select(. != null and . != "")) | join("|")),
+          imageId: ."image-id",
           kmsKeyId: ."kms-key-id",
           backupPolicyId: ."backup-policy-id",
           freeformTagCount: ((."freeform-tags" // {}) | keys | length),
@@ -733,8 +794,8 @@ merge_compute_region() {
   fi
   jq -s '.' "$jsonl_file" > "$json_file"
   jq -r '
-    ["compartment-path","region","instance-name","shape","ocpus","memory-in-gbs","baseline-ocpu-utilization","lifecycle-state","availability-domain","fault-domain","image-id","launch-mode","source-type","capacity-reservation-id","dedicated-vm-host-id","preemptible-action-type","availability-recovery-action","legacy-imds-endpoints-disabled","network-type","consistent-volume-naming-enabled","monitoring-disabled","management-disabled","live-migration-preferred","pv-encryption-in-transit-enabled","metadata-key-count","freeform-tag-count","defined-tag-namespace-count","time-created","instance-id"],
-    (.[] | [.compartmentPath, .region, .instanceName, .shape, .ocpus, .memoryInGBs, .baselineOcpuUtilization, .lifecycleState, .availabilityDomain, .faultDomain, .imageId, .launchMode, .sourceType, .capacityReservationId, .dedicatedVmHostId, .preemptibleActionType, .availabilityRecoveryAction, .legacyImdsEndpointsDisabled, .networkType, .consistentVolumeNamingEnabled, .monitoringDisabled, .managementDisabled, .liveMigrationPreferred, .pvEncryptionInTransitEnabled, .metadataKeyCount, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .instanceId]) | @csv
+    ["compartment-id","compartment-path","region","instance-name","shape","ocpus","memory-in-gbs","baseline-ocpu-utilization","lifecycle-state","availability-domain","fault-domain","image-id","launch-mode","launch-boot-volume-type","launch-firmware","launch-remote-data-volume-type","source-type","capacity-reservation-id","dedicated-vm-host-id","time-maintenance-reboot-due","preemptible-action-type","availability-recovery-action","legacy-imds-endpoints-disabled","network-type","consistent-volume-naming-enabled","all-plugins-disabled","monitoring-disabled","management-disabled","live-migration-preferred","pv-encryption-in-transit-enabled","metadata-key-count","extended-metadata-key-count","platform-type","platform-secure-boot-enabled","platform-tpm-enabled","platform-measured-boot-enabled","platform-memory-encryption-enabled","freeform-tag-count","defined-tag-namespace-count","time-created","instance-id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .instanceName, .shape, .ocpus, .memoryInGBs, .baselineOcpuUtilization, .lifecycleState, .availabilityDomain, .faultDomain, .imageId, .launchMode, .launchBootVolumeType, .launchFirmware, .launchRemoteDataVolumeType, .sourceType, .capacityReservationId, .dedicatedVmHostId, .timeMaintenanceRebootDue, .preemptibleActionType, .availabilityRecoveryAction, .legacyImdsEndpointsDisabled, .networkType, .consistentVolumeNamingEnabled, .allPluginsDisabled, .monitoringDisabled, .managementDisabled, .liveMigrationPreferred, .pvEncryptionInTransitEnabled, .metadataKeyCount, .extendedMetadataKeyCount, .platformType, .platformSecureBootEnabled, .platformTrustedPlatformModuleEnabled, .platformMeasuredBootEnabled, .platformMemoryEncryptionEnabled, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .instanceId]) | @csv
   ' "$json_file" > "$csv_file"
   jq -r '
     ["shape","count"],
@@ -777,8 +838,8 @@ merge_compute_regions() {
   verbose "wrote 'report/compute/compute_target_compartments.csv'"
 
   jq -r '
-    ["compartment-path","region","instance-name","shape","ocpus","memory-in-gbs","baseline-ocpu-utilization","lifecycle-state","availability-domain","fault-domain","image-id","launch-mode","source-type","capacity-reservation-id","dedicated-vm-host-id","preemptible-action-type","availability-recovery-action","legacy-imds-endpoints-disabled","network-type","consistent-volume-naming-enabled","monitoring-disabled","management-disabled","live-migration-preferred","pv-encryption-in-transit-enabled","metadata-key-count","freeform-tag-count","defined-tag-namespace-count","time-created","instance-id"],
-    (.[] | [.compartmentPath, .region, .instanceName, .shape, .ocpus, .memoryInGBs, .baselineOcpuUtilization, .lifecycleState, .availabilityDomain, .faultDomain, .imageId, .launchMode, .sourceType, .capacityReservationId, .dedicatedVmHostId, .preemptibleActionType, .availabilityRecoveryAction, .legacyImdsEndpointsDisabled, .networkType, .consistentVolumeNamingEnabled, .monitoringDisabled, .managementDisabled, .liveMigrationPreferred, .pvEncryptionInTransitEnabled, .metadataKeyCount, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .instanceId]) | @csv
+    ["compartment-id","compartment-path","region","instance-name","shape","ocpus","memory-in-gbs","baseline-ocpu-utilization","lifecycle-state","availability-domain","fault-domain","image-id","launch-mode","launch-boot-volume-type","launch-firmware","launch-remote-data-volume-type","source-type","capacity-reservation-id","dedicated-vm-host-id","time-maintenance-reboot-due","preemptible-action-type","availability-recovery-action","legacy-imds-endpoints-disabled","network-type","consistent-volume-naming-enabled","all-plugins-disabled","monitoring-disabled","management-disabled","live-migration-preferred","pv-encryption-in-transit-enabled","metadata-key-count","extended-metadata-key-count","platform-type","platform-secure-boot-enabled","platform-tpm-enabled","platform-measured-boot-enabled","platform-memory-encryption-enabled","freeform-tag-count","defined-tag-namespace-count","time-created","instance-id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .instanceName, .shape, .ocpus, .memoryInGBs, .baselineOcpuUtilization, .lifecycleState, .availabilityDomain, .faultDomain, .imageId, .launchMode, .launchBootVolumeType, .launchFirmware, .launchRemoteDataVolumeType, .sourceType, .capacityReservationId, .dedicatedVmHostId, .timeMaintenanceRebootDue, .preemptibleActionType, .availabilityRecoveryAction, .legacyImdsEndpointsDisabled, .networkType, .consistentVolumeNamingEnabled, .allPluginsDisabled, .monitoringDisabled, .managementDisabled, .liveMigrationPreferred, .pvEncryptionInTransitEnabled, .metadataKeyCount, .extendedMetadataKeyCount, .platformType, .platformSecureBootEnabled, .platformTrustedPlatformModuleEnabled, .platformMeasuredBootEnabled, .platformMemoryEncryptionEnabled, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .instanceId]) | @csv
   ' report/compute/compute_instances.json > report/compute/compute_instances.csv
   verbose "wrote 'report/compute/compute_instances.csv'"
 
@@ -893,6 +954,7 @@ merge_storage_region() {
         | {
             region: $v.region,
             compartmentPath: $v.compartmentPath,
+            compartmentId: $v.compartmentId,
             kind: $v.kind,
             displayName: $v.displayName,
             id: $v.id,
@@ -900,7 +962,13 @@ merge_storage_region() {
             availabilityDomain: $v.availabilityDomain,
             sizeInGBs: $v.sizeInGBs,
             vpusPerGB: $v.vpusPerGB,
+            isHydrated: $v.isHydrated,
             autoTuneEnabled: $v.autoTuneEnabled,
+            autoTunedVpusPerGB: $v.autoTunedVpusPerGB,
+            autotunePolicyCount: $v.autotunePolicyCount,
+            volumeGroupId: $v.volumeGroupId,
+            replicaAdList: $v.replicaAdList,
+            imageId: $v.imageId,
             kmsKeyId: $v.kmsKeyId,
             backupPolicyId: $v.backupPolicyId,
             backupCount: ($b.backupCount // 0),
@@ -916,8 +984,8 @@ merge_storage_region() {
     ' "$inventory_jsonl" > "${out_dir}/storage_inventory_enriched.json"
 
   jq -r '
-    ["region","compartment-path","kind","display-name","lifecycle-state","availability-domain","size-in-gbs","vpus-per-gb","auto-tune-enabled","backup-policy-id","backup-count","latest-backup-time","latest-backup-type","replica-count","dr-protection","kms-key-id","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
-    (.[] | [.region,.compartmentPath,.kind,.displayName,.lifecycleState,.availabilityDomain,.sizeInGBs,.vpusPerGB,.autoTuneEnabled,.backupPolicyId,.backupCount,.latestBackupTime,.latestBackupType,.replicaCount,.drProtection,.kmsKeyId,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.id]) | @csv
+    ["compartment-id","compartment-path","region","kind","display-name","lifecycle-state","availability-domain","size-in-gbs","vpus-per-gb","is-hydrated","auto-tune-enabled","auto-tuned-vpus-per-gb","autotune-policy-count","volume-group-id","replica-ad-list","backup-policy-id","backup-count","latest-backup-time","latest-backup-type","replica-count","dr-protection","kms-key-id","image-id","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId,.compartmentPath,.region,.kind,.displayName,.lifecycleState,.availabilityDomain,.sizeInGBs,.vpusPerGB,.isHydrated,.autoTuneEnabled,.autoTunedVpusPerGB,.autotunePolicyCount,.volumeGroupId,.replicaAdList,.backupPolicyId,.backupCount,.latestBackupTime,.latestBackupType,.replicaCount,.drProtection,.kmsKeyId,.imageId,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.id]) | @csv
   ' "${out_dir}/storage_inventory_enriched.json" > "${out_dir}/storage_inventory.csv"
   verbose "wrote region artifact dir '${out_dir}'"
   local total
@@ -957,15 +1025,21 @@ merge_storage_regions() {
 
   jq -r '
     [
-      "region",
+      "compartment-id",
       "compartment-path",
+      "region",
       "kind",
       "display-name",
       "lifecycle-state",
       "availability-domain",
       "size-in-gbs",
       "vpus-per-gb",
+      "is-hydrated",
       "auto-tune-enabled",
+      "auto-tuned-vpus-per-gb",
+      "autotune-policy-count",
+      "volume-group-id",
+      "replica-ad-list",
       "backup-policy-id",
       "backup-count",
       "latest-backup-time",
@@ -973,6 +1047,7 @@ merge_storage_regions() {
       "replica-count",
       "dr-protection",
       "kms-key-id",
+      "image-id",
       "freeform-tag-count",
       "defined-tag-namespace-count",
       "time-created",
@@ -981,15 +1056,21 @@ merge_storage_regions() {
     (
       .[] |
       [
-        .region,
+        .compartmentId,
         .compartmentPath,
+        .region,
         .kind,
         .displayName,
         .lifecycleState,
         .availabilityDomain,
         .sizeInGBs,
         .vpusPerGB,
+        .isHydrated,
         .autoTuneEnabled,
+        .autoTunedVpusPerGB,
+        .autotunePolicyCount,
+        .volumeGroupId,
+        .replicaAdList,
         .backupPolicyId,
         .backupCount,
         .latestBackupTime,
@@ -997,6 +1078,7 @@ merge_storage_regions() {
         .replicaCount,
         .drProtection,
         .kmsKeyId,
+        .imageId,
         .freeformTagCount,
         .definedTagNamespaceCount,
         .timeCreated,
@@ -1030,7 +1112,7 @@ build_limits_region() {
 
   if [[ "$(jq 'length' "$compute_region_json")" -eq 0 ]] && [[ "$(jq 'length' "$storage_region_json")" -eq 0 ]]; then
     echo "[]" > "${out_dir}/service_limits.json"
-    jq -n -r '["region","service-name","limit-name","scope-type","availability-domain","limit-value","used","available","usage-percent"] | @csv' > "${out_dir}/service_limits.csv"
+    jq -n -r '["region","service-name","limit-name","scope-type","availability-domain","limit-value","used","available","usage-percent","id"] | @csv' > "${out_dir}/service_limits.csv"
     verbose "Done. 0 limits in ${region}."
     return 0
   fi
@@ -1068,8 +1150,8 @@ build_limits_region() {
     rm -f "$values_file" "$prefixes_file"
   done
 
-  jq -s 'def to_num: if . == null or . == "" then null else (try (tonumber) catch null) end; def pct($u; $l): if $u == null or $l == null or $l == 0 then null else (($u / $l) * 100) end; map(. as $r | ($r.limitValue | to_num) as $limit | ($r.used | to_num) as $used | ($r.available | to_num) as $avail | (pct($used; $limit)) as $pct | {region: $r.region, serviceName: $r.serviceName, limitName: $r.limitName, scopeType: $r.scopeType, availabilityDomain: $r.availabilityDomain, limitValue: $limit, used: $used, available: $avail, usagePercent: $pct}) | sort_by(-( .usagePercent // -1 ), .region, .serviceName, .limitName)' "$rows_jsonl" > "${out_dir}/service_limits.json"
-  jq -r '["region","service-name","limit-name","scope-type","availability-domain","limit-value","used","available","usage-percent"], (.[] | [.region,.serviceName,.limitName,.scopeType,.availabilityDomain,.limitValue,.used,.available,.usagePercent]) | @csv' "${out_dir}/service_limits.json" > "${out_dir}/service_limits.csv"
+  jq -s 'def to_num: if . == null or . == "" then null else (try (tonumber) catch null) end; def pct($u; $l): if $u == null or $l == null or $l == 0 then null else (($u / $l) * 100) end; map(. as $r | ($r.limitValue | to_num) as $limit | ($r.used | to_num) as $used | ($r.available | to_num) as $avail | (pct($used; $limit)) as $pct | {region: $r.region, serviceName: $r.serviceName, limitName: $r.limitName, scopeType: $r.scopeType, availabilityDomain: $r.availabilityDomain, limitValue: $limit, used: $used, available: $avail, usagePercent: $pct, id: ($r.region + ":" + $r.serviceName + ":" + ($r.scopeType // "") + ":" + ($r.availabilityDomain // "") + ":" + $r.limitName)}) | sort_by(-( .usagePercent // -1 ), .region, .serviceName, .limitName)' "$rows_jsonl" > "${out_dir}/service_limits.json"
+  jq -r '["region","service-name","limit-name","scope-type","availability-domain","limit-value","used","available","usage-percent","id"], (.[] | [.region,.serviceName,.limitName,.scopeType,.availabilityDomain,.limitValue,.used,.available,.usagePercent,.id]) | @csv' "${out_dir}/service_limits.json" > "${out_dir}/service_limits.csv"
   verbose "wrote region artifact dir '${out_dir}'"
   local total
   total="$(tail -n +2 "${out_dir}/service_limits.csv" | wc -l | tr -d ' ')"
@@ -1109,7 +1191,8 @@ merge_limits_regions() {
       "limit-value",
       "used",
       "available",
-      "usage-percent"
+      "usage-percent",
+      "id"
     ],
     (
       .[] |
@@ -1122,7 +1205,8 @@ merge_limits_regions() {
         .limitValue,
         .used,
         .available,
-        .usagePercent
+        .usagePercent,
+        .id
       ]
     ) | @csv
   ' report/limits/service_limits.json > report/limits/service_limits.csv

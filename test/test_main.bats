@@ -6,7 +6,9 @@ setup() {
   export WORKDIR="$TMPDIR_TEST/work"
   mkdir -p "$WORKDIR"
   export OCI_TEST_THROTTLE_STATE_FILE="$TMPDIR_TEST/oci_throttle_state"
+  export OCI_TEST_TIMEOUT_STATE_FILE="$TMPDIR_TEST/oci_timeout_state"
   rm -f "$OCI_TEST_THROTTLE_STATE_FILE"
+  rm -f "$OCI_TEST_TIMEOUT_STATE_FILE"
 
   mkdir -p "$TMPDIR_TEST/bin"
   cat > "$TMPDIR_TEST/bin/oci" <<'MOCK'
@@ -19,6 +21,21 @@ if [[ -n "${OCI_TEST_THROTTLE_ONCE_PATTERN:-}" ]] && [[ "$args" == *"$OCI_TEST_T
   if [[ ! -f "${OCI_TEST_THROTTLE_STATE_FILE:-}" ]]; then
     : > "${OCI_TEST_THROTTLE_STATE_FILE:-/tmp/oci_throttle_state}"
     echo "ServiceError: {'status': 429, 'code': 'TooManyRequests', 'message': 'Rate limit exceeded'}" >&2
+    exit 1
+  fi
+fi
+
+if [[ -n "${OCI_TEST_TIMEOUT_ONCE_PATTERN:-}" ]] && [[ "$args" == *"$OCI_TEST_TIMEOUT_ONCE_PATTERN"* ]]; then
+  if [[ ! -f "${OCI_TEST_TIMEOUT_STATE_FILE:-}" ]]; then
+    : > "${OCI_TEST_TIMEOUT_STATE_FILE:-/tmp/oci_timeout_state}"
+    cat >&2 <<'ERR'
+RequestException:
+{
+    "client_version": "Oracle-PythonCLI/3.76.0",
+    "message": "The connection to endpoint timed out.",
+    "target_service": "CLI"
+}
+ERR
     exit 1
   fi
 fi
@@ -191,10 +208,18 @@ if [[ "$args" == iam\ policy\ list* ]]; then
     {
       "id": "ocid1.policy.oc1..p1",
       "name": "policy-child",
+      "description": "Policy for child compartment",
+      "lifecycle-state": "ACTIVE",
       "time-created": "2026-01-01T00:00:00+00:00",
+      "freeform-tags": {
+        "owner": "sec"
+      },
       "defined-tags": {
         "Oracle-Tags": {
           "CreatedBy": "tester@example.com"
+        },
+        "Operations": {
+          "CostCenter": "123"
         }
       },
       "statements": [
@@ -225,6 +250,7 @@ if [[ "$args" == compute\ instance\ list* ]]; then
         "baseline-ocpu-utilization": "BASELINE_1_2"
       },
       "lifecycle-state": "RUNNING",
+      "time-maintenance-reboot-due": "2026-02-01T00:00:00+00:00",
       "availability-domain": "kIdk:EU-FRANKFURT-1-AD-1",
       "fault-domain": "FAULT-DOMAIN-1",
       "image-id": "ocid1.image.oc1..img1",
@@ -236,16 +262,28 @@ if [[ "$args" == compute\ instance\ list* ]]; then
       "availability-config": {"recovery-action": "RESTORE_INSTANCE"},
       "instance-options": {"are-legacy-imds-endpoints-disabled": true},
       "launch-options": {
+        "boot-volume-type": "PARAVIRTUALIZED",
+        "firmware": "UEFI_64",
         "network-type": "VFIO",
+        "remote-data-volume-type": "PARAVIRTUALIZED",
         "is-consistent-volume-naming-enabled": true
       },
       "agent-config": {
+        "are-all-plugins-disabled": false,
         "is-monitoring-disabled": false,
         "is-management-disabled": false
+      },
+      "platform-config": {
+        "type": "AMD_VM",
+        "is-secure-boot-enabled": true,
+        "is-trusted-platform-module-enabled": true,
+        "is-measured-boot-enabled": true,
+        "is-memory-encryption-enabled": true
       },
       "is-live-migration-preferred": true,
       "is-pv-encryption-in-transit-enabled": true,
       "metadata": {"ssh_authorized_keys": "x"},
+      "extended-metadata": {"note":"test"},
       "freeform-tags": {"owner": "app"},
       "defined-tags": {"Operations": {"CostCenter": "123"}},
       "time-created": "2026-01-02T00:00:00+00:00",
@@ -271,9 +309,16 @@ if [[ "$args" == bv\ volume\ list* ]]; then
       "availability-domain": "AD-1",
       "size-in-gbs": 200,
       "vpus-per-gb": 20,
+      "is-hydrated": true,
       "is-auto-tune-enabled": true,
+      "auto-tuned-vpus-per-gb": 30,
+      "autotune-policies": [{"autotune-type":"PERFORMANCE_BASED"}],
+      "volume-group-id": "ocid1.volumegroup.oc1..vg1",
       "kms-key-id": "ocid1.key.oc1..k1",
       "backup-policy-id": "ocid1.volumebackuppolicy.oc1..p1",
+      "block-volume-replicas": [
+        {"availability-domain":"AD-2"}
+      ],
       "freeform-tags": {"owner":"app"},
       "defined-tags": {"Operations":{"CostCenter":"123"}},
       "time-created": "2026-01-03T00:00:00+00:00"
@@ -294,7 +339,15 @@ if [[ "$args" == bv\ boot-volume\ list* ]]; then
       "lifecycle-state": "AVAILABLE",
       "availability-domain": "AD-1",
       "size-in-gbs": 50,
+      "vpus-per-gb": 10,
+      "is-hydrated": false,
+      "is-auto-tune-enabled": false,
+      "auto-tuned-vpus-per-gb": null,
+      "autotune-policies": [],
+      "boot-volume-replicas": [],
+      "volume-group-id": "ocid1.volumegroup.oc1..vg2",
       "kms-key-id": null,
+      "image-id": "ocid1.image.oc1..img1",
       "backup-policy-id": null,
       "freeform-tags": {},
       "defined-tags": {},
@@ -428,9 +481,13 @@ teardown() {
   [ -f report/policies/policy_statements.csv ]
   run cat report/policies/policy_statements.csv
   [ "$status" -eq 0 ]
-  [[ "$output" == *"compartment-id,compartment-name,policy-name"* ]]
+  [[ "$output" == *"compartment-id,compartment-path,statement-seq,policy-name,policy-statement,created-by,time-created,policy-lifecycle-state,policy-description,policy-freeform-tag-count,policy-defined-tag-namespace-count,id"* ]]
   [[ "$output" == *"ocid1.compartment.oc1..child"* ]]
   [[ "$output" == *"policy-child"* ]]
+  [[ "$output" == *"\"policy-child\",\"Allow group Devs to inspect all-resources in compartment child\",\"tester@example.com\",\"2026-01-01T00:00:00+00:00\",\"ACTIVE\",\"Policy for child compartment\",1,2,\"ocid1.policy.oc1..p1\""* ]]
+  [[ "$output" == *"ACTIVE"* ]]
+  [[ "$output" == *"Policy for child compartment"* ]]
+  [[ "$output" == *",1,2,"* ]]
 }
 
 @test "limits command writes service_limits.csv" {
@@ -444,10 +501,11 @@ teardown() {
 
   run cat report/limits/service_limits.csv
   [ "$status" -eq 0 ]
-  [[ "$output" == *"region,service-name,limit-name,scope-type"* ]]
+  [[ "$output" == *"region,service-name,limit-name,scope-type,availability-domain,limit-value,used,available,usage-percent,id"* ]]
   [[ "$output" == *"eu-frankfurt-1,compute"* ]]
   [[ "$output" == *"eu-frankfurt-1,block-storage"* ]]
-  [[ "$output" == *"compute"* ]]
+  [[ "$output" == *"standard-e4-core-count"* ]]
+  [[ "$output" == *"eu-frankfurt-1:compute:REGION"* ]]
 }
 
 @test "block-storage command writes storage_inventory.csv with dr fields" {
@@ -461,10 +519,16 @@ teardown() {
 
   run cat report/storage/storage_inventory.csv
   [ "$status" -eq 0 ]
-  [[ "$output" == *"region,compartment-path,kind,display-name"* ]]
+  [[ "$output" == *"compartment-id,compartment-path,region,kind,display-name"* ]]
   [[ "$output" == *"block-volume"* ]]
   [[ "$output" == *"boot-volume"* ]]
   [[ "$output" == *"\"YES\""* ]]
+  [[ "$output" == *"ocid1.compartment.oc1..child"* ]]
+  [[ "$output" == *"ocid1.volumegroup.oc1..vg1"* ]]
+  [[ "$output" == *",true,30,1,"* ]]
+  [[ "$output" == *"AD-2"* ]]
+  [[ "$output" == *"ocid1.image.oc1..img1"* ]]
+  [[ "$output" == *"ocid1.bootvolume.oc1..b1"* ]]
 }
 
 @test "compute command writes compute_instances.csv with shape and sizing" {
@@ -481,6 +545,14 @@ teardown() {
   [[ "$output" == *"app-01"* ]]
   [[ "$output" == *"VM.Standard.E4.Flex"* ]]
   [[ "$output" == *",2,16,"* ]]
+  [[ "$output" == *"time-maintenance-reboot-due"* ]]
+  [[ "$output" == *"launch-boot-volume-type"* ]]
+  [[ "$output" == *"platform-secure-boot-enabled"* ]]
+  [[ "$output" == *"extended-metadata-key-count"* ]]
+  [[ "$output" == *"2026-02-01T00:00:00+00:00"* ]]
+  [[ "$output" == *"UEFI_64"* ]]
+  [[ "$output" == *"AMD_VM"* ]]
+  [[ "$output" == *",true,true,true,true,"* ]]
 }
 
 @test "compute skips unreachable regions from REGIONS" {
@@ -551,6 +623,16 @@ EOF
   run "$SCRIPT_PATH" compute
   [ "$status" -eq 0 ]
   [[ "$output" == *"rate-limited"* ]]
+}
+
+@test "compute retries once on OCI connection timeout error" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export OCI_TEST_TIMEOUT_ONCE_PATTERN="iam region-subscription list"
+
+  run "$SCRIPT_PATH" compute
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"timed out"* ]]
 }
 
 @test "make all declares dependency graph for parallel execution" {
