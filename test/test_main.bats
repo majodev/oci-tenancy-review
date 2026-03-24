@@ -200,6 +200,19 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == search\ resource\ structured-search*"query bucket resources"* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "compartment-id": "ocid1.compartment.oc1..child"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 if [[ "$args" == iam\ policy\ list* ]]; then
   if [[ "$args" == *"ocid1.compartment.oc1..child"* ]]; then
     cat <<'JSON'
@@ -423,6 +436,60 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == os\ ns\ get* ]]; then
+  cat <<'JSON'
+{
+  "data": "mynamespace"
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == os\ bucket\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "name": "bucket-a",
+      "namespace": "mynamespace",
+      "compartment-id": "ocid1.compartment.oc1..child",
+      "created-by": "ocid1.user.oc1..u1",
+      "time-created": "2026-01-06T00:00:00+00:00",
+      "etag": "etag-1",
+      "freeform-tags": {"owner":"team-a"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}}
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == os\ bucket\ get* ]]; then
+  cat <<'JSON'
+{
+  "data": {
+    "id": "ocid1.bucket.oc1.eu-frankfurt-1..b1",
+    "public-access-type": "NoPublicAccess",
+    "storage-tier": "Standard",
+    "object-events-enabled": false,
+    "replication-enabled": true,
+    "is-read-only": false,
+    "versioning": "Enabled",
+    "auto-tiering": "InfrequentAccess",
+    "kms-key-id": "ocid1.key.oc1..k1",
+    "approximate-count": 7,
+    "approximate-size": 4096,
+    "object-lifecycle-policy-etag": "olp-etag-1",
+    "metadata": {
+      "env": "dev"
+    }
+  }
+}
+JSON
+  exit 0
+fi
+
 echo "Unhandled mock OCI command: $args" >&2
 exit 1
 MOCK
@@ -595,6 +662,7 @@ EOF
   [[ "$output" == *"policy-compartment-%:"* ]]
   [[ "$output" == *"compute-compartment-%:"* ]]
   [[ "$output" == *"block-storage-compartment-%:"* ]]
+  [[ "$output" == *"object-storage-compartment-%:"* ]]
 }
 
 @test "block-storage-region writes region-scoped artifacts" {
@@ -604,6 +672,21 @@ EOF
   run "$SCRIPT_PATH" block-storage-region eu-frankfurt-1
   [ "$status" -eq 0 ]
   [ -f report/storage/regions/eu-frankfurt-1/storage_inventory_enriched.json ]
+}
+
+@test "object-storage command writes buckets_inventory.csv" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" object-storage
+  [ "$status" -eq 0 ]
+  [ -f report/object-storage/buckets_inventory.csv ]
+
+  run cat report/object-storage/buckets_inventory.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"compartment-id,compartment-path,region,namespace,bucket-name,bucket-created-by,time-created,etag,freeform-tag-count,defined-tag-namespace-count,freeform-tag-keys,defined-tag-namespaces,defined-tag-key-count,freeform-tags-json,defined-tags-json,bucket-id,public-access-type,storage-tier,object-events-enabled,replication-enabled,is-read-only,versioning,auto-tiering,kms-key-id,approximate-object-count,approximate-size-bytes,object-lifecycle-policy-etag,metadata-key-count,id"* ]]
+  [[ "$output" == *"\"ocid1.compartment.oc1..child\",\"child\",\"eu-frankfurt-1\",\"mynamespace\",\"bucket-a\",\"ocid1.user.oc1..u1\",\"2026-01-06T00:00:00+00:00\",\"etag-1\",1,1,\"owner\",\"Operations\",1,\"{\"\"owner\"\":\"\"team-a\"\"}\",\"{\"\"Operations\"\":{\"\"CostCenter\"\":\"\"42\"\"}}\",\"ocid1.bucket.oc1.eu-frankfurt-1..b1\",\"NoPublicAccess\",\"Standard\",false,true,false,\"Enabled\",\"InfrequentAccess\",\"ocid1.key.oc1..k1\",7,4096,\"olp-etag-1\",1,\"ocid1.bucket.oc1.eu-frankfurt-1..b1\""* ]]
 }
 
 @test "DEBUG=true enables bash xtrace output" {
@@ -642,12 +725,14 @@ EOF
 
   run make -pn all
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all: compartments policies compute block-storage limits"* ]]
+  [[ "$output" == *"all: regions compartments compute block-storage object-storage limits policies"* ]]
   [[ "$output" == *"policies: compartments"* ]]
   [[ "$output" == *"compute: compartments regions"* ]]
   [[ "$output" == *"compute-region-%:"* ]]
   [[ "$output" == *"block-storage: compartments regions"* ]]
   [[ "$output" == *"block-storage-region-%:"* ]]
+  [[ "$output" == *"object-storage: compartments regions"* ]]
+  [[ "$output" == *"object-storage-region-%:"* ]]
   [[ "$output" == *"limits: compute block-storage"* ]]
   [[ "$output" == *"limits-region-%:"* ]]
 }

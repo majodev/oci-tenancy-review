@@ -26,15 +26,18 @@ Commands:
   block-storage        Export block + boot volume inventory to report/storage/storage_inventory.csv
   block-storage-region Fetch block/boot inventory for one region to report/storage/regions/<region>/
   block-storage-merge  Merge region storage artifacts into report/storage/storage_inventory.csv
+  object-storage        Export object storage bucket inventory to report/object-storage/buckets_inventory.csv
+  object-storage-region Fetch object storage inventory for one region to report/object-storage/regions/<region>/
+  object-storage-merge  Merge region object storage artifacts into report/object-storage/buckets_inventory.csv
   limits         Export compute + block-storage limits posture to report/limits/service_limits.csv
   limits-region  Fetch limits posture for one region to report/limits/regions/<region>/
   limits-merge   Merge region limits artifacts into report/limits/service_limits.csv
-  all            Run compartments + policies + compute + block-storage + limits
+  all            Run compartments + policies + compute + block-storage + object-storage + limits
   help           Show this help
 
 Note:
   Command 'all' is always orchestrated through Make.
-  Parallel workflow commands (policies, compute, block-storage, limits)
+  Parallel workflow commands (policies, compute, block-storage, object-storage, limits)
   are orchestrated through Make when a local Makefile is present.
   Default MAKEFLAGS when unset: -j 8
 
@@ -58,6 +61,9 @@ Examples:
   ./oci-tenancy-review block-storage
   ./oci-tenancy-review block-storage-region eu-frankfurt-1
   ./oci-tenancy-review block-storage-merge
+  ./oci-tenancy-review object-storage
+  ./oci-tenancy-review object-storage-region eu-frankfurt-1
+  ./oci-tenancy-review object-storage-merge
   ./oci-tenancy-review limits
   ./oci-tenancy-review limits-region eu-frankfurt-1
   ./oci-tenancy-review limits-merge
@@ -185,7 +191,7 @@ oci_cli() {
 
 
 init_report_dirs() {
-  mkdir -p report report/compute report/policies report/limits report/storage
+  mkdir -p report report/compute report/policies report/limits report/storage report/object-storage
 }
 
 require_tenancy() {
@@ -1250,9 +1256,178 @@ build_storage() {
   merge_storage_regions
 }
 
+build_object_storage_compartment_region() {
+  local region="$1"
+  local cid="$2"
+  local out_file="$3"
+  local namespace="$4"
+  local cpath
+  local bucket_summary bucket_name bucket_namespace bucket_detail
+  cpath="$(get_compartment_path "$cid")"
+  : > "$out_file"
+  while IFS= read -r bucket_summary; do
+    [[ -n "$bucket_summary" ]] || continue
+    bucket_name="$(jq -r '.name // empty' <<< "$bucket_summary")"
+    [[ -n "$bucket_name" ]] || continue
+    bucket_namespace="$(jq -r --arg ns "$namespace" '.namespace // $ns' <<< "$bucket_summary")"
+    bucket_detail="$(oci_cli os bucket get --bucket-name "$bucket_name" --namespace-name "$bucket_namespace" --region "$region" --fields approximateCount --fields approximateSize --fields autoTiering --output json | jq -c '.data // {}')"
+    jq -cn --arg region "$region" --arg cid "$cid" --arg cpath "$cpath" --arg ns "$namespace" --argjson summary "$bucket_summary" --argjson detail "$bucket_detail" '
+      {
+        compartmentId: $cid,
+        compartmentPath: $cpath,
+        region: $region,
+        namespace: ($summary.namespace // $ns),
+        bucketName: $summary.name,
+        bucketCreatedBy: $summary."created-by",
+        timeCreated: $summary."time-created",
+        etag: $summary.etag,
+        freeformTagCount: (($summary."freeform-tags" // {}) | keys | length),
+        definedTagNamespaceCount: (($summary."defined-tags" // {}) | keys | length),
+        freeformTagKeys: (($summary."freeform-tags" // {}) | keys | sort | join(";")),
+        definedTagNamespaces: (($summary."defined-tags" // {}) | keys | sort | join(";")),
+        definedTagKeyCount: ((($summary."defined-tags" // {}) | to_entries | map((.value // {}) | keys | length) | add) // 0),
+        freeformTagsJson: (($summary."freeform-tags" // {}) | tojson),
+        definedTagsJson: (($summary."defined-tags" // {}) | tojson),
+        bucketId: ($detail.id // ""),
+        publicAccessType: ($detail."public-access-type" // ""),
+        storageTier: ($detail."storage-tier" // ""),
+        objectEventsEnabled: ($detail."object-events-enabled" // false),
+        replicationEnabled: ($detail."replication-enabled" // false),
+        isReadOnly: ($detail."is-read-only" // false),
+        versioning: ($detail.versioning // ""),
+        autoTiering: ($detail."auto-tiering" // ""),
+        kmsKeyId: ($detail."kms-key-id" // ""),
+        approximateObjectCount: ($detail."approximate-count" // 0),
+        approximateSizeBytes: ($detail."approximate-size" // 0),
+        objectLifecyclePolicyEtag: ($detail."object-lifecycle-policy-etag" // ""),
+        metadataKeyCount: (($detail.metadata // {}) | keys | length),
+        id: (($detail.id // ($region + ":" + ($summary.namespace // $ns) + ":" + $summary.name)))
+      }
+    ' >> "$out_file"
+  done < <(oci_cli os bucket list --compartment-id "$cid" --all --fields tags --region "$region" --namespace-name "$namespace" --output json | jq -c '.data[]?')
+}
+
+prepare_object_storage_region() {
+  local region="$1"
+  local out_dir
+  local target_file
+  local cid_file
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+  [[ -n "$region" ]] || fatal "Region is required"
+
+  out_dir="report/object-storage/regions/${region}"
+  target_file="${out_dir}/object_storage_target_compartments_${region}.csv"
+  cid_file="${out_dir}/.object_storage_cids_${region}.txt"
+  mkdir -p "${out_dir}/compartments"
+  rm -f "${out_dir}/compartments/"*.jsonl
+  search "query bucket resources" "$target_file" "$region"
+  awk -F',' 'NR>1 && $1 != "" {print $1}' "$target_file" > "$cid_file"
+  local total
+  total="$(wc -l < "$cid_file" | tr -d ' ')"
+  verbose "Done. ${total} target compartments for ${region}."
+}
+
+merge_object_storage_region() {
+  local region="$1"
+  local out_dir
+  local jsonl_file
+  local json_file
+  local csv_file
+  local -a part_files
+  out_dir="report/object-storage/regions/${region}"
+  jsonl_file="${out_dir}/buckets_inventory.jsonl"
+  json_file="${out_dir}/buckets_inventory.json"
+  csv_file="${out_dir}/buckets_inventory.csv"
+  : > "$jsonl_file"
+  shopt -s nullglob
+  part_files=("${out_dir}/compartments/"*.jsonl)
+  shopt -u nullglob
+  if [[ "${#part_files[@]}" -gt 0 ]]; then
+    cat "${part_files[@]}" >> "$jsonl_file"
+  fi
+  jq -s 'sort_by(.region, .compartmentPath, .bucketName)' "$jsonl_file" > "$json_file"
+  jq -r '
+    ["compartment-id","compartment-path","region","namespace","bucket-name","bucket-created-by","time-created","etag","freeform-tag-count","defined-tag-namespace-count","freeform-tag-keys","defined-tag-namespaces","defined-tag-key-count","freeform-tags-json","defined-tags-json","bucket-id","public-access-type","storage-tier","object-events-enabled","replication-enabled","is-read-only","versioning","auto-tiering","kms-key-id","approximate-object-count","approximate-size-bytes","object-lifecycle-policy-etag","metadata-key-count","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .namespace, .bucketName, .bucketCreatedBy, .timeCreated, .etag, .freeformTagCount, .definedTagNamespaceCount, .freeformTagKeys, .definedTagNamespaces, .definedTagKeyCount, .freeformTagsJson, .definedTagsJson, .bucketId, .publicAccessType, .storageTier, .objectEventsEnabled, .replicationEnabled, .isReadOnly, .versioning, .autoTiering, .kmsKeyId, .approximateObjectCount, .approximateSizeBytes, .objectLifecyclePolicyEtag, .metadataKeyCount, .id]) | @csv
+  ' "$json_file" > "$csv_file"
+  verbose "wrote region artifact dir '${out_dir}'"
+  local total
+  total="$(jq 'length' "$json_file")"
+  verbose "Done. ${total} buckets in ${region}."
+}
+
+build_object_storage_region() {
+  local region="$1"
+  local cid
+  local namespace
+  prepare_object_storage_region "$region"
+  namespace="$(oci_cli os ns get --compartment-id "$TENANCY_OCID" --region "$region" --output json | jq -r '.data // empty')"
+  [[ -n "$namespace" ]] || fatal "Failed to resolve Object Storage namespace for region ${region}"
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    build_object_storage_compartment_region "$region" "$cid" "report/object-storage/regions/${region}/compartments/${cid}.jsonl" "$namespace"
+  done < "report/object-storage/regions/${region}/.object_storage_cids_${region}.txt"
+  merge_object_storage_region "$region"
+}
+
+merge_object_storage_regions() {
+  init_report_dirs
+  ensure_target_regions
+  local -a regions json_files
+  local region f
+  regions=()
+  json_files=()
+  while IFS= read -r region; do
+    [[ -n "$region" ]] && regions+=("$region")
+  done < <(resolve_target_regions)
+
+  for region in "${regions[@]}"; do
+    f="report/object-storage/regions/${region}/buckets_inventory.json"
+    [[ -s "$f" ]] || fatal "Missing region object-storage artifact: $f"
+    json_files+=("$f")
+  done
+
+  jq -s '[.[][]] | sort_by(.region, .compartmentPath, .bucketName)' "${json_files[@]}" > report/object-storage/buckets_inventory.json
+  verbose "wrote 'report/object-storage/buckets_inventory.json'"
+
+  {
+    echo "compartment-id,compartment-path"
+    for region in "${regions[@]}"; do
+      if [[ -s "report/object-storage/regions/${region}/object_storage_target_compartments_${region}.csv" ]]; then
+        tail -n +2 "report/object-storage/regions/${region}/object_storage_target_compartments_${region}.csv"
+      fi
+    done | sort -u
+  } > report/object-storage/object_storage_target_compartments.csv
+  verbose "wrote 'report/object-storage/object_storage_target_compartments.csv'"
+
+  jq -r '
+    ["compartment-id","compartment-path","region","namespace","bucket-name","bucket-created-by","time-created","etag","freeform-tag-count","defined-tag-namespace-count","freeform-tag-keys","defined-tag-namespaces","defined-tag-key-count","freeform-tags-json","defined-tags-json","bucket-id","public-access-type","storage-tier","object-events-enabled","replication-enabled","is-read-only","versioning","auto-tiering","kms-key-id","approximate-object-count","approximate-size-bytes","object-lifecycle-policy-etag","metadata-key-count","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .namespace, .bucketName, .bucketCreatedBy, .timeCreated, .etag, .freeformTagCount, .definedTagNamespaceCount, .freeformTagKeys, .definedTagNamespaces, .definedTagKeyCount, .freeformTagsJson, .definedTagsJson, .bucketId, .publicAccessType, .storageTier, .objectEventsEnabled, .replicationEnabled, .isReadOnly, .versioning, .autoTiering, .kmsKeyId, .approximateObjectCount, .approximateSizeBytes, .objectLifecyclePolicyEtag, .metadataKeyCount, .id]) | @csv
+  ' report/object-storage/buckets_inventory.json > report/object-storage/buckets_inventory.csv
+  verbose "wrote 'report/object-storage/buckets_inventory.csv'"
+  local total
+  total="$(jq 'length' report/object-storage/buckets_inventory.json)"
+  log "Done. ${total} buckets."
+}
+
+build_object_storage() {
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+  ensure_target_regions
+  local region
+  while IFS= read -r region; do
+    [[ -n "$region" ]] || continue
+    build_object_storage_region "$region"
+  done < <(resolve_target_regions)
+  merge_object_storage_regions
+}
+
 is_make_routed_target() {
   case "$1" in
-    all|regions|compartments|policies|compute|block-storage|limits)
+    all|regions|compartments|policies|compute|block-storage|object-storage|limits)
       return 0
       ;;
     *)
@@ -1324,7 +1499,7 @@ main() {
       return
     fi
   elif [[ "${#positional[@]}" -gt 1 ]] && is_make_routed_target "${positional[0]}"; then
-    fatal "Invalid make target list: ${positional[*]}. Valid make-routed targets are: all regions compartments policies compute block-storage limits"
+    fatal "Invalid make target list: ${positional[*]}. Valid make-routed targets are: all regions compartments policies compute block-storage object-storage limits"
   fi
 
   cmd="${positional[0]}"
@@ -1353,6 +1528,10 @@ main() {
     _storage-compartment)
       [[ "${#cmd_args[@]}" -eq 3 ]] || fatal "Usage: _storage-compartment <region> <compartment-ocid> <out-prefix>"
       build_storage_compartment_region "${cmd_args[0]}" "${cmd_args[1]}" "${cmd_args[2]}"
+      ;;
+    _object-storage-compartment)
+      [[ "${#cmd_args[@]}" -eq 4 ]] || fatal "Usage: _object-storage-compartment <region> <compartment-ocid> <out-file> <namespace>"
+      build_object_storage_compartment_region "${cmd_args[0]}" "${cmd_args[1]}" "${cmd_args[2]}" "${cmd_args[3]}"
       ;;
     compute-region)
       [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for compute-region"
@@ -1389,6 +1568,21 @@ main() {
       ;;
     block-storage-merge)
       merge_storage_regions
+      ;;
+    object-storage-region)
+      [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for object-storage-region"
+      build_object_storage_region "${cmd_args[0]}"
+      ;;
+    object-storage-region-prepare)
+      [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for object-storage-region-prepare"
+      prepare_object_storage_region "${cmd_args[0]}"
+      ;;
+    object-storage-region-merge)
+      [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for object-storage-region-merge"
+      merge_object_storage_region "${cmd_args[0]}"
+      ;;
+    object-storage-merge)
+      merge_object_storage_regions
       ;;
     limits-region)
       [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for limits-region"
