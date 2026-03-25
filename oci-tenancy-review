@@ -26,6 +26,9 @@ Commands:
   block-storage        Export block + boot volume inventory to report/storage/storage_inventory.csv
   block-storage-region Fetch block/boot inventory for one region to report/storage/regions/<region>/
   block-storage-merge  Merge region storage artifacts into report/storage/storage_inventory.csv
+  base-database        Export base database inventory to report/base-database/base_databases.csv
+  base-database-region Fetch base database inventory for one region to report/base-database/regions/<region>/
+  base-database-merge  Merge region base database artifacts into report/base-database/base_databases.csv
   object-storage        Export object storage bucket inventory to report/object-storage/buckets_inventory.csv
   object-storage-region Fetch object storage inventory for one region to report/object-storage/regions/<region>/
   object-storage-merge  Merge region object storage artifacts into report/object-storage/buckets_inventory.csv
@@ -35,12 +38,12 @@ Commands:
   limits                Export merged limits posture to report/limits/service_limits.csv
   limits-region         Fetch limits posture for one region to report/limits/regions/<region>/ (optional service scope)
   limits-merge          Merge service-specific limits artifacts into report/limits/service_limits.csv
-  all            Run compartments + policies + compute + block-storage + object-storage + limits
+  all            Run compartments + policies + compute + block-storage + base-database + object-storage + limits
   help           Show this help
 
 Note:
   Command 'all' is always orchestrated through Make.
-  Parallel workflow commands (policies, compute, block-storage, object-storage, compute-limits, block-storage-limits, object-storage-limits, limits)
+  Parallel workflow commands (policies, compute, block-storage, base-database, object-storage, compute-limits, block-storage-limits, object-storage-limits, limits)
   are orchestrated through Make when a local Makefile is present.
   Default MAKEFLAGS when unset: -j 4
 
@@ -64,6 +67,9 @@ Examples:
   ./oci-tenancy-review block-storage
   ./oci-tenancy-review block-storage-region eu-frankfurt-1
   ./oci-tenancy-review block-storage-merge
+  ./oci-tenancy-review base-database
+  ./oci-tenancy-review base-database-region eu-frankfurt-1
+  ./oci-tenancy-review base-database-merge
   ./oci-tenancy-review object-storage
   ./oci-tenancy-review object-storage-region eu-frankfurt-1
   ./oci-tenancy-review object-storage-merge
@@ -198,7 +204,7 @@ oci_cli() {
 
 
 init_report_dirs() {
-  mkdir -p report report/compute report/policies report/limits report/storage report/object-storage
+  mkdir -p report report/compute report/policies report/limits report/storage report/base-database report/object-storage
 }
 
 require_tenancy() {
@@ -1362,6 +1368,171 @@ build_storage() {
   merge_storage_regions
 }
 
+build_base_database_compartment_region() {
+  local region="$1"
+  local cid="$2"
+  local out_file="$3"
+  local cpath
+  cpath="$(get_compartment_path "$cid")"
+  oci_cli db database list --compartment-id "$cid" --region "$region" --output json \
+    | jq -c --arg region "$region" --arg cid "$cid" --arg cpath "$cpath" '
+        .data[]?
+        | (."db-backup-config" // .dbBackupConfig // {}) as $b
+        | {
+          compartmentId: $cid,
+          compartmentPath: $cpath,
+          region: $region,
+          dbName: (."db-name" // .dbName // ."display-name" // ""),
+          dbUniqueName: (."db-unique-name" // .dbUniqueName // ""),
+          dbWorkload: (."db-workload" // .dbWorkload // ""),
+          dbVersion: (."db-version" // .dbVersion // ""),
+          dbSystemId: (."db-system-id" // .dbSystemId // ""),
+          dbHomeId: (."db-home-id" // .dbHomeId // ""),
+          vmClusterId: (."vm-cluster-id" // .vmClusterId // ""),
+          cdbName: (."cdb-name" // .cdbName // ""),
+          pdbName: (."pdb-name" // .pdbName // ""),
+          lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+          lifecycleDetails: (."lifecycle-details" // .lifecycleDetails // ""),
+          characterSet: (."character-set" // .characterSet // ""),
+          ncharacterSet: (."ncharacter-set" // .ncharacterSet // ""),
+          isCdb: (."is-cdb" // .isCdb // false),
+          kmsKeyId: (."kms-key-id" // .kmsKeyId // ""),
+          kmsKeyVersionId: (."kms-key-version-id" // .kmsKeyVersionId // ""),
+          keyStoreId: (."key-store-id" // .keyStoreId // ""),
+          keyStoreWalletName: (."key-store-wallet-name" // .keyStoreWalletName // ""),
+          vaultId: (."vault-id" // .vaultId // ""),
+          databaseSoftwareImageId: (."database-software-image-id" // .databaseSoftwareImageId // ""),
+          sidPrefix: (."sid-prefix" // .sidPrefix // ""),
+          autoBackupEnabled: ($b."auto-backup-enabled" // $b.autoBackupEnabled // false),
+          backupRecoveryWindowInDays: ($b."recovery-window-in-days" // $b.recoveryWindowInDays // ""),
+          backupDestinationType: ($b."backup-destination-type" // $b.backupDestinationType // ""),
+          autoFullBackupDay: ($b."auto-full-backup-day" // $b.autoFullBackupDay // ""),
+          lastBackupTimestamp: (."last-backup-timestamp" // .lastBackupTimestamp // ""),
+          lastFailedBackupTimestamp: (."last-failed-backup-timestamp" // .lastFailedBackupTimestamp // ""),
+          lastBackupDurationInSeconds: (."last-backup-duration-in-seconds" // .lastBackupDurationInSeconds // ""),
+          freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+          definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+          timeCreated: (."time-created" // .timeCreated // ""),
+          id: (.id // "")
+        }
+      ' > "$out_file"
+}
+
+prepare_base_database_region() {
+  local region="$1"
+  local out_dir
+  local target_file
+  local cid_file
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+  [[ -n "$region" ]] || fatal "Region is required"
+
+  out_dir="report/base-database/regions/${region}"
+  target_file="${out_dir}/base_database_target_compartments_${region}.csv"
+  cid_file="${out_dir}/.base_database_cids_${region}.txt"
+  mkdir -p "${out_dir}/compartments"
+  rm -f "${out_dir}/compartments/"*.jsonl
+  search "query database resources" "$target_file" "$region"
+  awk -F',' 'NR>1 && $1 != "" {print $1}' "$target_file" > "$cid_file"
+  local total
+  total="$(wc -l < "$cid_file" | tr -d ' ')"
+  verbose "Done. ${total} target compartments for ${region}."
+}
+
+merge_base_database_region() {
+  local region="$1"
+  local out_dir
+  local jsonl_file
+  local json_file
+  local csv_file
+  local -a part_files
+  out_dir="report/base-database/regions/${region}"
+  jsonl_file="${out_dir}/base_databases.jsonl"
+  json_file="${out_dir}/base_databases.json"
+  csv_file="${out_dir}/base_databases.csv"
+  : > "$jsonl_file"
+  shopt -s nullglob
+  part_files=("${out_dir}/compartments/"*.jsonl)
+  shopt -u nullglob
+  if [[ "${#part_files[@]}" -gt 0 ]]; then
+    cat "${part_files[@]}" >> "$jsonl_file"
+  fi
+  jq -s 'sort_by(.region, .compartmentPath, .dbName)' "$jsonl_file" > "$json_file"
+  jq -r '
+    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
+  ' "$json_file" > "$csv_file"
+  verbose "wrote region artifact dir '${out_dir}'"
+  local total
+  total="$(jq 'length' "$json_file")"
+  verbose "Done. ${total} base databases in ${region}."
+}
+
+build_base_database_region() {
+  local region="$1"
+  local cid
+  prepare_base_database_region "$region"
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    build_base_database_compartment_region "$region" "$cid" "report/base-database/regions/${region}/compartments/${cid}.jsonl"
+  done < "report/base-database/regions/${region}/.base_database_cids_${region}.txt"
+  merge_base_database_region "$region"
+}
+
+merge_base_database_regions() {
+  init_report_dirs
+  ensure_target_regions
+  local -a regions json_files
+  local region f
+  regions=()
+  json_files=()
+  while IFS= read -r region; do
+    [[ -n "$region" ]] && regions+=("$region")
+  done < <(resolve_target_regions)
+
+  for region in "${regions[@]}"; do
+    f="report/base-database/regions/${region}/base_databases.json"
+    [[ -s "$f" ]] || fatal "Missing region base-database artifact: $f"
+    json_files+=("$f")
+  done
+
+  jq -s '[.[][]] | sort_by(.region, .compartmentPath, .dbName)' "${json_files[@]}" > report/base-database/base_databases.json
+  verbose "wrote 'report/base-database/base_databases.json'"
+
+  {
+    echo "compartment-id,compartment-path"
+    for region in "${regions[@]}"; do
+      if [[ -s "report/base-database/regions/${region}/base_database_target_compartments_${region}.csv" ]]; then
+        tail -n +2 "report/base-database/regions/${region}/base_database_target_compartments_${region}.csv"
+      fi
+    done | sort -u
+  } > report/base-database/base_database_target_compartments.csv
+  verbose "wrote 'report/base-database/base_database_target_compartments.csv'"
+
+  jq -r '
+    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
+  ' report/base-database/base_databases.json > report/base-database/base_databases.csv
+  verbose "wrote 'report/base-database/base_databases.csv'"
+  local total
+  total="$(jq 'length' report/base-database/base_databases.json)"
+  log "Done. ${total} base databases."
+}
+
+build_base_database() {
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+  ensure_target_regions
+  local region
+  while IFS= read -r region; do
+    [[ -n "$region" ]] || continue
+    build_base_database_region "$region"
+  done < <(resolve_target_regions)
+  merge_base_database_regions
+}
+
 build_object_storage_compartment_region() {
   local region="$1"
   local cid="$2"
@@ -1533,7 +1704,7 @@ build_object_storage() {
 
 is_make_routed_target() {
   case "$1" in
-    all|regions|compartments|policies|compute|block-storage|object-storage|compute-limits|block-storage-limits|object-storage-limits|limits)
+    all|regions|compartments|policies|compute|block-storage|base-database|object-storage|compute-limits|block-storage-limits|object-storage-limits|limits)
       return 0
       ;;
     *)
@@ -1605,7 +1776,7 @@ main() {
       return
     fi
   elif [[ "${#positional[@]}" -gt 1 ]] && is_make_routed_target "${positional[0]}"; then
-    fatal "Invalid make target list: ${positional[*]}. Valid make-routed targets are: all regions compartments policies compute block-storage object-storage compute-limits block-storage-limits object-storage-limits limits"
+    fatal "Invalid make target list: ${positional[*]}. Valid make-routed targets are: all regions compartments policies compute block-storage base-database object-storage compute-limits block-storage-limits object-storage-limits limits"
   fi
 
   cmd="${positional[0]}"
@@ -1634,6 +1805,10 @@ main() {
     _storage-compartment)
       [[ "${#cmd_args[@]}" -eq 3 ]] || fatal "Usage: _storage-compartment <region> <compartment-ocid> <out-prefix>"
       build_storage_compartment_region "${cmd_args[0]}" "${cmd_args[1]}" "${cmd_args[2]}"
+      ;;
+    _base-database-compartment)
+      [[ "${#cmd_args[@]}" -eq 3 ]] || fatal "Usage: _base-database-compartment <region> <compartment-ocid> <out-file>"
+      build_base_database_compartment_region "${cmd_args[0]}" "${cmd_args[1]}" "${cmd_args[2]}"
       ;;
     _object-storage-compartment)
       [[ "${#cmd_args[@]}" -eq 4 ]] || fatal "Usage: _object-storage-compartment <region> <compartment-ocid> <out-file> <namespace>"
@@ -1674,6 +1849,21 @@ main() {
       ;;
     block-storage-merge)
       merge_storage_regions
+      ;;
+    base-database-region)
+      [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for base-database-region"
+      build_base_database_region "${cmd_args[0]}"
+      ;;
+    base-database-region-prepare)
+      [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for base-database-region-prepare"
+      prepare_base_database_region "${cmd_args[0]}"
+      ;;
+    base-database-region-merge)
+      [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for base-database-region-merge"
+      merge_base_database_region "${cmd_args[0]}"
+      ;;
+    base-database-merge)
+      merge_base_database_regions
       ;;
     object-storage-region)
       [[ "${#cmd_args[@]}" -ge 1 ]] || fatal "Region argument required for object-storage-region"

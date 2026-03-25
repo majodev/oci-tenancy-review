@@ -9,7 +9,7 @@ SHELL := /bin/bash
 SCRIPT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))/oci-tenancy-review
 SELF_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 
-all: regions compartments compute block-storage object-storage compute-limits block-storage-limits object-storage-limits limits policies
+all: regions compartments compute block-storage base-database object-storage compute-limits block-storage-limits object-storage-limits limits policies
 
 compartments:
 	@$(SCRIPT) _compartments
@@ -52,6 +52,21 @@ block-storage-region-%:
 block-storage-compartment-%:
 	@stem="$*"; region="$${stem%%___CID___*}"; cid="$${stem#*___CID___}"; \
 	$(SCRIPT) _storage-compartment "$$region" "$$cid" "report/storage/regions/$$region/compartments/$$cid"
+
+base-database: compartments regions
+	@regions="$$(awk 'NF {print "base-database-region-"$$0}' report/regions.txt)"; \
+	if [[ -n "$$regions" ]]; then $(MAKE) -f "$(SELF_MAKEFILE)" $$regions; fi
+	@$(SCRIPT) base-database-merge
+
+base-database-region-%:
+	@$(SCRIPT) base-database-region-prepare $*
+	@targets="$$(awk 'NF {print "base-database-compartment-$*___CID___"$$1}' report/base-database/regions/$*/.base_database_cids_$*.txt)"; \
+	if [[ -n "$$targets" ]]; then $(MAKE) -f "$(SELF_MAKEFILE)" $$targets; fi
+	@$(SCRIPT) base-database-region-merge $*
+
+base-database-compartment-%:
+	@stem="$*"; region="$${stem%%___CID___*}"; cid="$${stem#*___CID___}"; \
+	$(SCRIPT) _base-database-compartment "$$region" "$$cid" "report/base-database/regions/$$region/compartments/$$cid.jsonl"
 
 object-storage: compartments regions
 	@regions="$$(awk 'NF {print "object-storage-region-"$$0}' report/regions.txt)"; \
@@ -96,9 +111,10 @@ limits-region-%:
 regions:
 	@$(SCRIPT) _regions
 
-.PHONY: all policies compute block-storage limits compute-limits block-storage-limits object-storage-limits \
+.PHONY: all policies compute block-storage base-database limits compute-limits block-storage-limits object-storage-limits \
 	object-storage \
 	policy-compartment-% compute-region-% compute-compartment-% \
 	block-storage-region-% block-storage-compartment-% \
+	base-database-region-% base-database-compartment-% \
 	object-storage-region-% object-storage-compartment-% limits-region-% \
 	compartments regions _compartments _regions

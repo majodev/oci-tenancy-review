@@ -4,7 +4,7 @@
 
 This repository provides `./oci-tenancy-review`, a CLI tool to easily generate OCI tenancy bill of materials (BOMs) exported as CSV, compatible with [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm).
 
-We focus on **speed by concurrently scraping specific OCI domains** (e.g. compute, block-storage, object-storage, limits) rather than providing a full view of a whole OCI tenancy.
+We focus on **speed by concurrently scraping specific OCI domains** (e.g. compute, block-storage, base-database, object-storage, limits) rather than providing a full view of a whole OCI tenancy.
 
 - [OCI Tenancy Review](#oci-tenancy-review)
   - [Prerequisites](#prerequisites)
@@ -20,6 +20,7 @@ We focus on **speed by concurrently scraping specific OCI domains** (e.g. comput
     - [`report/compute/compute_instances.csv`](#reportcomputecompute_instancescsv)
     - [`report/compute/compute_shapes_summary.csv`](#reportcomputecompute_shapes_summarycsv)
     - [`report/storage/storage_inventory.csv`](#reportstoragestorage_inventorycsv)
+    - [`report/base-database/base_databases.csv`](#reportbase-databasebase_databasescsv)
     - [`report/object-storage/buckets_inventory.csv`](#reportobject-storagebuckets_inventorycsv)
     - [`report/limits/compute_limits.csv`](#reportlimitscompute_limitscsv)
     - [`report/limits/block_storage_limits.csv`](#reportlimitsblock_storage_limitscsv)
@@ -157,7 +158,7 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 
 ```bash
 # Run selected workflow domains
-./oci-tenancy-review compute block-storage object-storage
+./oci-tenancy-review compute block-storage base-database object-storage
 
 # Build report/regions.txt (reachable, non-blacklisted target regions)
 ./oci-tenancy-review regions
@@ -182,6 +183,12 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 
 # Build object storage inventory for one region at report/object-storage/regions/<region>/
 ./oci-tenancy-review object-storage-region eu-frankfurt-1
+
+# Build base database inventory CSV at report/base-database/
+./oci-tenancy-review base-database
+
+# Build base database inventory for one region at report/base-database/regions/<region>/
+./oci-tenancy-review base-database-region eu-frankfurt-1
 
 # Build compute + block-storage + object-storage limits posture CSV at report/limits/
 ./oci-tenancy-review limits
@@ -361,6 +368,45 @@ CSV header:
 
 Implementation detail: each bucket now uses `oci os bucket get` for enrichment, while Make fan-out remains region -> compartment for concurrency.
 
+### `report/base-database/base_databases.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `db-name`
+- `db-unique-name`
+- `db-workload`
+- `db-version`
+- `db-system-id`
+- `db-home-id`
+- `vm-cluster-id`
+- `cdb-name`
+- `pdb-name`
+- `lifecycle-state`
+- `lifecycle-details`
+- `character-set`
+- `ncharacter-set`
+- `is-cdb`
+- `kms-key-id`
+- `kms-key-version-id`
+- `key-store-id`
+- `key-store-wallet-name`
+- `vault-id`
+- `database-software-image-id`
+- `sid-prefix`
+- `auto-backup-enabled`
+- `backup-recovery-window-in-days`
+- `backup-destination-type`
+- `auto-full-backup-day`
+- `last-backup-timestamp`
+- `last-failed-backup-timestamp`
+- `last-backup-duration-in-seconds`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `id`
+
 ### `report/limits/service_limits.csv`
 
 CSV header:
@@ -392,11 +438,12 @@ Same schema as `service_limits.csv`, scoped to `service-name=object-storage`.
 
 ### Per-Region Reports
 
-When region workflows are used (for example via `compute`, `block-storage`, `object-storage`, `limits`), each domain
+When region workflows are used (for example via `compute`, `block-storage`, `base-database`, `object-storage`, `limits`), each domain
 also writes per-region artifacts:
 
 - `report/compute/regions/<region>/compute_instances.csv`
 - `report/storage/regions/<region>/storage_inventory.csv`
+- `report/base-database/regions/<region>/base_databases.csv`
 - `report/object-storage/regions/<region>/buckets_inventory.csv`
 - `report/limits/regions/<region>/service_limits.csv`
 

@@ -235,6 +235,19 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == search\ resource\ structured-search*"query database resources"* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "compartment-id": "ocid1.compartment.oc1..child"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 if [[ "$args" == iam\ policy\ list* ]]; then
   if [[ "$args" == *"ocid1.compartment.oc1..child"* ]]; then
     cat <<'JSON'
@@ -330,6 +343,52 @@ JSON
   else
     echo '{"data": []}'
   fi
+  exit 0
+fi
+
+if [[ "$args" == db\ database\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.database.oc1..d1",
+      "db-name": "APPDB",
+      "db-unique-name": "APPDB_iad1",
+      "db-workload": "OLTP",
+      "db-version": "19c",
+      "db-system-id": "ocid1.dbsystem.oc1..s1",
+      "db-home-id": "ocid1.dbhome.oc1..h1",
+      "vm-cluster-id": null,
+      "cdb-name": "CDB1",
+      "pdb-name": "PDB1",
+      "lifecycle-state": "AVAILABLE",
+      "lifecycle-details": "Primary DB",
+      "character-set": "AL32UTF8",
+      "ncharacter-set": "AL16UTF16",
+      "is-cdb": true,
+      "kms-key-id": "ocid1.key.oc1..kdb1",
+      "kms-key-version-id": "ocid1.keyversion.oc1..kv1",
+      "key-store-id": "ocid1.keystore.oc1..ks1",
+      "key-store-wallet-name": "WLT1",
+      "vault-id": "ocid1.vault.oc1..v1",
+      "database-software-image-id": "ocid1.dbsoftwareimage.oc1..img1",
+      "sid-prefix": "DB",
+      "last-backup-timestamp": "2026-01-08T00:00:00+00:00",
+      "last-failed-backup-timestamp": "2026-01-09T00:00:00+00:00",
+      "last-backup-duration-in-seconds": 1234,
+      "db-backup-config": {
+        "auto-backup-enabled": true,
+        "recovery-window-in-days": 7,
+        "backup-destination-type": "NFS",
+        "auto-full-backup-day": "SUNDAY"
+      },
+      "time-created": "2026-01-07T00:00:00+00:00",
+      "freeform-tags": {"owner":"dba"},
+      "defined-tags": {"Operations":{"CostCenter":"99"}}
+    }
+  ]
+}
+JSON
   exit 0
 fi
 
@@ -690,6 +749,7 @@ EOF
   [[ "$output" == *"policy-compartment-%:"* ]]
   [[ "$output" == *"compute-compartment-%:"* ]]
   [[ "$output" == *"block-storage-compartment-%:"* ]]
+  [[ "$output" == *"base-database-compartment-%:"* ]]
   [[ "$output" == *"object-storage-compartment-%:"* ]]
 }
 
@@ -700,6 +760,21 @@ EOF
   run "$SCRIPT_PATH" block-storage-region eu-frankfurt-1
   [ "$status" -eq 0 ]
   [ -f report/storage/regions/eu-frankfurt-1/storage_inventory_enriched.json ]
+}
+
+@test "base-database command writes base_databases.csv" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+  [ -f report/base-database/base_databases.csv ]
+
+  run cat report/base-database/base_databases.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"compartment-id,compartment-path,region,db-name,db-unique-name,db-workload,db-version,db-system-id,db-home-id,vm-cluster-id,cdb-name,pdb-name,lifecycle-state,lifecycle-details,character-set,ncharacter-set,is-cdb,kms-key-id,kms-key-version-id,key-store-id,key-store-wallet-name,vault-id,database-software-image-id,sid-prefix,auto-backup-enabled,backup-recovery-window-in-days,backup-destination-type,auto-full-backup-day,last-backup-timestamp,last-failed-backup-timestamp,last-backup-duration-in-seconds,freeform-tag-count,defined-tag-namespace-count,time-created,id"* ]]
+  [[ "$output" == *"\"ocid1.compartment.oc1..child\",\"child\",\"eu-frankfurt-1\",\"APPDB\",\"APPDB_iad1\",\"OLTP\",\"19c\",\"ocid1.dbsystem.oc1..s1\",\"ocid1.dbhome.oc1..h1\",\"\",\"CDB1\",\"PDB1\",\"AVAILABLE\",\"Primary DB\",\"AL32UTF8\",\"AL16UTF16\",true,\"ocid1.key.oc1..kdb1\",\"ocid1.keyversion.oc1..kv1\",\"ocid1.keystore.oc1..ks1\",\"WLT1\",\"ocid1.vault.oc1..v1\",\"ocid1.dbsoftwareimage.oc1..img1\",\"DB\",true,7,\"NFS\",\"SUNDAY\",\"2026-01-08T00:00:00+00:00\",\"2026-01-09T00:00:00+00:00\",1234,1,1,\"2026-01-07T00:00:00+00:00\",\"ocid1.database.oc1..d1\""* ]]
 }
 
 @test "object-storage command writes buckets_inventory.csv" {
@@ -753,12 +828,14 @@ EOF
 
   run make -pn all
   [ "$status" -eq 0 ]
-  [[ "$output" == *"all: regions compartments compute block-storage object-storage compute-limits block-storage-limits object-storage-limits limits policies"* ]]
+  [[ "$output" == *"all: regions compartments compute block-storage base-database object-storage compute-limits block-storage-limits object-storage-limits limits policies"* ]]
   [[ "$output" == *"policies: compartments"* ]]
   [[ "$output" == *"compute: compartments regions"* ]]
   [[ "$output" == *"compute-region-%:"* ]]
   [[ "$output" == *"block-storage: compartments regions"* ]]
   [[ "$output" == *"block-storage-region-%:"* ]]
+  [[ "$output" == *"base-database: compartments regions"* ]]
+  [[ "$output" == *"base-database-region-%:"* ]]
   [[ "$output" == *"object-storage: compartments regions"* ]]
   [[ "$output" == *"object-storage-region-%:"* ]]
   [[ "$output" == *"compute-limits: compute"* ]]
