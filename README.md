@@ -29,6 +29,7 @@ We focus on **speed by concurrently scraping specific OCI domains** (e.g. comput
     - [`report/limits/object_storage_limits.csv`](#reportlimitsobject_storage_limitscsv)
     - [Per-Region Reports](#per-region-reports)
   - [Tests](#tests)
+  - [Design Choices](#design-choices)
   - [Alternatives](#alternatives)
 
 
@@ -143,15 +144,13 @@ For larger tenancies or repeated runs, use `make` to execute region/compartment 
 # Build all top-level CSVs (cached by file timestamps) with 4 job runners
 make -j 4 --no-print-directory all
 
-# Run specific job runner
+# Run specific job runner concurrently
 make -j 4 --no-print-directory regions compartments policies compute block-storage base-database object-storage limits 
 
-# Build a specific CSV artifacts (this will execute the depending runner)
+# Build a specific CSV artifact (this will execute the depending runner)
 make -j 4 --no-print-directory report/compute/compute_instances.csv
 make -j 4 --no-print-directory report/limits/service_limits.csv
 ```
- 
-`make` invalidates cached outputs automatically when `Makefile` or `oci-tenancy-review` changes.
 
 ---
 
@@ -177,6 +176,8 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 ```
 
 ### Run a specific reporter (uncached)
+
+Note that the following runs uncached and serial. Use `make -j 4 --no-print-directory <cmd>` if you want to control job concurrency and have artifact caching.
 
 ```bash
 # Build report/regions.txt (reachable, non-blacklisted target regions)
@@ -473,6 +474,16 @@ Bats tests are under `test/test_main.bats`.
 ```bash
 bats test/test_main.bats
 ```
+
+## Design Choices
+
+This repository intentionally separates concerns:
+
+- `./oci-tenancy-review` is responsible for fetching OCI data and exporting report artifacts per domain (JSON/CSV).
+- `Makefile` is responsible for orchestration concerns such as concurrent job execution and cache-aware target rebuilding.
+
+In practice, the script defines what data is fetched and exported, while `make` defines how work is scheduled and reused.
+
 
 ## Alternatives
 
