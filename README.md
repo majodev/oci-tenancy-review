@@ -11,6 +11,7 @@ We focus on **speed by concurrently scraping specific OCI domains** (e.g. comput
   - [Setup](#setup)
     - [Set tenancy OCID (required)](#set-tenancy-ocid-required)
   - [Usage](#usage)
+    - [Advanced: parallel fan-out + cached CSV outputs via Make](#advanced-parallel-fan-out--cached-csv-outputs-via-make)
     - [Setting target region(s) for discovery](#setting-target-regions-for-discovery)
     - [Run a specific reporter](#run-a-specific-reporter)
   - [Exported Files](#exported-files)
@@ -20,12 +21,12 @@ We focus on **speed by concurrently scraping specific OCI domains** (e.g. comput
     - [`report/compute/compute_instances.csv`](#reportcomputecompute_instancescsv)
     - [`report/compute/compute_shapes_summary.csv`](#reportcomputecompute_shapes_summarycsv)
     - [`report/storage/storage_inventory.csv`](#reportstoragestorage_inventorycsv)
-    - [`report/base-database/base_databases.csv`](#reportbase-databasebase_databasescsv)
     - [`report/object-storage/buckets_inventory.csv`](#reportobject-storagebuckets_inventorycsv)
+    - [`report/base-database/base_databases.csv`](#reportbase-databasebase_databasescsv)
+    - [`report/limits/service_limits.csv`](#reportlimitsservice_limitscsv)
     - [`report/limits/compute_limits.csv`](#reportlimitscompute_limitscsv)
     - [`report/limits/block_storage_limits.csv`](#reportlimitsblock_storage_limitscsv)
     - [`report/limits/object_storage_limits.csv`](#reportlimitsobject_storage_limitscsv)
-    - [`report/limits/service_limits.csv`](#reportlimitsservice_limitscsv)
     - [Per-Region Reports](#per-region-reports)
   - [Tests](#tests)
   - [Alternatives](#alternatives)
@@ -116,7 +117,7 @@ echo "Your tenancy ocid is: '${TENANCY_OCID}'"
 ## Usage
 
 ```bash
-# Run all reports (serial, self-contained)
+# Run all reports
 ./oci-tenancy-review all
 
 # Your reports are now available in the report subfolder
@@ -139,14 +140,17 @@ Now inspect all .csv files in that archive.
 For larger tenancies or repeated runs, use `make` to execute region/compartment fan-out concurrently and cache top-level CSV outputs.
 
 ```bash
-# Build all top-level CSVs (cached by file timestamps)
+# Build all top-level CSVs (cached by file timestamps) with 4 job runners
 make -j 4 all
 
-# Build selected artifacts
+# Run specific job runner
+make -j 4 regions compartments policies compute block-storage base-database object-storage limits 
+
+# Build a specific CSV artifacts (this will execute the depending runner)
 make -j 4 report/compute/compute_instances.csv
 make -j 4 report/limits/service_limits.csv
 ```
-
+ 
 `make` invalidates cached outputs automatically when `Makefile` or `oci-tenancy-review` changes.
 
 ---
@@ -177,6 +181,8 @@ export BLACKLISTED_REGIONS="eu-amsterdam-1"
 ```bash
 # Run selected workflow domains
 ./oci-tenancy-review compute block-storage base-database object-storage
+# or parallel via 4 make jobs and cached output (only regenerate what is not here)
+make -j 4 compute block-storage base-database object-storage
 
 # Build report/regions.txt (reachable, non-blacklisted target regions)
 ./oci-tenancy-review regions
