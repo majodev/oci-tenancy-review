@@ -477,7 +477,7 @@ also writes per-region artifacts:
 
 ## Tests
 
-Bats tests are under `test/test_main.bats`.
+[Bats](https://bats-core.readthedocs.io/en/stable/) tests are under `test/test_main.bats`.
 
 ```bash
 bats test/test_main.bats
