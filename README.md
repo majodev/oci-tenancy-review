@@ -6,7 +6,7 @@ This repository provides `./oci-tenancy-review`, a CLI tool to easily generate O
 
 We focus on **speed by concurrently scraping specific OCI domains** (e.g. compute, block-storage, base-database, object-storage, limits) rather than providing a full view of a whole OCI tenancy. These CSV artifacts can be cached granularly, making the process resumable.
 
-Here's a sample video on how to quickly download a full archive of usage CSVs of your tenancy via [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm):   
+Here's a sample video on how to quickly download a full archive of usage CSVs of your tenancy via [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) ([fallback video link](https://objectstorage.eu-frankfurt-1.oraclecloud.com/p/VlWiV3DZA0TZXRVPv3KxWv3Fpp0WaY3BbjtcjfY_M9-v9HrrySN5BJmR9HjItLWD/n/frnhkcj2u67r/b/mranftl_shared/o/oci-tenancy-review/oci-tenancy-review-own-sm.mp4)):   
 
 <p align="center" width="100%">
 <video src="https://github.com/user-attachments/assets/9863fe12-ed46-4918-8288-45d009b8f549" width="80%" controls></video>
