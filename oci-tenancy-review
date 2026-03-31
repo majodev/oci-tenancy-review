@@ -590,14 +590,6 @@ build_compute() {
   merge_compute_regions
 }
 
-ensure_compute_inventory() {
-  [[ -s report/compute/compute_instances.json ]] || build_compute
-}
-
-ensure_storage_inventory() {
-  [[ -s report/storage/storage_inventory_enriched.json ]] || build_storage
-}
-
 ensure_target_regions() {
   [[ -s report/regions.txt ]] || build_regions
 }
@@ -1283,15 +1275,11 @@ merge_limits_regions() {
   log "Done. ${total} limits."
 }
 
-ensure_object_storage_inventory() {
-  [[ -s report/object-storage/buckets_inventory.json ]] || build_object_storage
-}
-
 build_compute_limits() {
   init_report_dirs
   require_tenancy
   ensure_target_regions
-  ensure_compute_inventory
+  [[ -s report/compute/compute_instances.json ]] || build_compute
   local region
   while IFS= read -r region; do
     [[ -n "$region" ]] || continue
@@ -1305,7 +1293,7 @@ build_block_storage_limits() {
   init_report_dirs
   require_tenancy
   ensure_target_regions
-  ensure_storage_inventory
+  [[ -s report/storage/storage_inventory_enriched.json ]] || build_storage
   local region
   while IFS= read -r region; do
     [[ -n "$region" ]] || continue
@@ -1319,7 +1307,7 @@ build_object_storage_limits() {
   init_report_dirs
   require_tenancy
   ensure_target_regions
-  ensure_object_storage_inventory
+  [[ -s report/object-storage/buckets_inventory.json ]] || build_object_storage
   local region
   while IFS= read -r region; do
     [[ -n "$region" ]] || continue
@@ -1580,7 +1568,7 @@ prepare_object_storage_region() {
   rm -f "${out_dir}/compartments/"*.jsonl
   search "query bucket resources" "$target_file" "$region"
   write_cids_from_targets_csv "$target_file" "$cid_file"
-  resolve_object_storage_namespace "$region" > "$namespace_file"
+  resolve_object_storage_namespace "$region" >/dev/null
   local total
   total="$(wc -l < "$cid_file" | tr -d ' ')"
   verbose "Done. ${total} target compartments for ${region}."
