@@ -927,6 +927,12 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "Makefile does not execute OCI commands directly" {
+  cd "$BATS_TEST_DIRNAME/.."
+  run bash -lc "if rg -n --pcre2 '(^|[[:space:];|&(])oci[[:space:]]+[a-z]' Makefile; then exit 1; fi"
+  [ "$status" -eq 0 ]
+}
+
 @test "source uses only whitelisted OCI invocation patterns" {
   cd "$BATS_TEST_DIRNAME/.."
   run bash -lc '
@@ -953,13 +959,12 @@ EOF
         *"oci_cli os bucket get"* ) ;;
         *"oci_cli os bucket list"* ) ;;
         *"oci_cli os ns get"* ) ;;
-        *"oci os ns get "* ) ;;
         *)
           echo "Unapproved OCI invocation: $entry" >&2
           exit 1
           ;;
       esac
-    done < <(rg -n --no-heading --color never "(command[[:space:]]+oci[[:space:]]+\"\\$@\"|oci_cli[[:space:]]|\\boci[[:space:]]+os[[:space:]]+ns[[:space:]]+get\\b)" oci-tenancy-review Makefile)
+    done < <(rg -n --no-heading --color never "(command[[:space:]]+oci[[:space:]]+\"\\$@\"|oci_cli[[:space:]])" oci-tenancy-review Makefile)
   '
   [ "$status" -eq 0 ]
 }

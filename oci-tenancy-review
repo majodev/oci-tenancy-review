@@ -108,13 +108,6 @@ warn() {
   printf '%b%s [W] %s: %s%b\n' "$COLOR_YELLOW" "$ts" "${FUNCNAME[1]}" "$msg" "$COLOR_END" >&2
 }
 
-err() {
-  local msg="$1"
-  local ts
-  ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
-  printf '%b%s [E] %s: %s%b\n' "$COLOR_RED" "$ts" "${FUNCNAME[1]}" "$msg" "$COLOR_END" >&2
-}
-
 fatal() {
   local msg="$1"
   local ts
@@ -1620,13 +1613,36 @@ prepare_object_storage_region() {
   out_dir="report/object-storage/regions/${region}"
   target_file="${out_dir}/object_storage_target_compartments_${region}.csv"
   cid_file="${out_dir}/.object_storage_cids_${region}.txt"
+  local namespace_file
   mkdir -p "${out_dir}/compartments"
+  namespace_file="${out_dir}/.object_storage_ns_${region}.txt"
   rm -f "${out_dir}/compartments/"*.jsonl
   search "query bucket resources" "$target_file" "$region"
   write_cids_from_targets_csv "$target_file" "$cid_file"
+  resolve_object_storage_namespace "$region" > "$namespace_file"
   local total
   total="$(wc -l < "$cid_file" | tr -d ' ')"
   verbose "Done. ${total} target compartments for ${region}."
+}
+
+resolve_object_storage_namespace() {
+  local region="$1"
+  local out_dir
+  local namespace_file
+  local namespace
+  out_dir="report/object-storage/regions/${region}"
+  namespace_file="${out_dir}/.object_storage_ns_${region}.txt"
+
+  if [[ -s "$namespace_file" ]]; then
+    cat "$namespace_file"
+    return 0
+  fi
+
+  namespace="$(oci_cli os ns get --compartment-id "$TENANCY_OCID" --region "$region" --output json | jq -r '.data // empty')"
+  [[ -n "$namespace" ]] || fatal "Failed to resolve Object Storage namespace for region ${region}"
+  mkdir -p "$out_dir"
+  printf '%s\n' "$namespace" > "$namespace_file"
+  printf '%s\n' "$namespace"
 }
 
 merge_object_storage_region() {
@@ -1656,8 +1672,7 @@ build_object_storage_region() {
   local cid
   local namespace
   prepare_object_storage_region "$region"
-  namespace="$(oci_cli os ns get --compartment-id "$TENANCY_OCID" --region "$region" --output json | jq -r '.data // empty')"
-  [[ -n "$namespace" ]] || fatal "Failed to resolve Object Storage namespace for region ${region}"
+  namespace="$(resolve_object_storage_namespace "$region")"
   while IFS= read -r cid; do
     [[ -n "$cid" ]] || continue
     build_object_storage_compartment_region "$region" "$cid" "report/object-storage/regions/${region}/compartments/${cid}.jsonl" "$namespace"

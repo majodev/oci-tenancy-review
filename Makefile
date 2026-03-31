@@ -108,7 +108,7 @@ report/object-storage/buckets_inventory.csv: report/compartments.csv report/regi
 
 object-storage-region-%:
 	@$(SCRIPT) object-storage-region-prepare $*
-	@namespace="$$(oci os ns get --compartment-id "$$TENANCY_OCID" --region "$*" --output json | jq -r '.data // empty')"; \
+	@namespace="$$(cat report/object-storage/regions/$*/.object_storage_ns_$*.txt 2>/dev/null || true)"; \
 	[[ -n "$$namespace" ]] || { echo "Failed to resolve Object Storage namespace for region $*" >&2; exit 1; }; \
 	targets="$$(awk -v ns="$$namespace" 'NF {print "object-storage-compartment-$*___CID___"$$1"___NS___"ns}' report/object-storage/regions/$*/.object_storage_cids_$*.txt)"; \
 	if [[ -n "$$targets" ]]; then $(MAKE) -f "$(SELF_MAKEFILE)" $$targets; fi
