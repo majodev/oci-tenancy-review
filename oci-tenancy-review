@@ -1232,7 +1232,7 @@ build_limits_region() {
   merge_limits_region_all_services "$region"
   local total
   total="$(tail -n +2 "report/limits/regions/${region}/service_limits.csv" | wc -l | tr -d ' ')"
-  verbose "Done. ${total} limits in ${region}."
+  verbose "Done. ${total} limits scoped ${service_scope:-all} in ${region}."
 }
 
 merge_limits_regions_by_service() {
