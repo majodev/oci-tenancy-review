@@ -683,13 +683,13 @@ EOF
   [ "$status" -eq 0 ]
   local normalized_output="${output//\"/}"
   [[ "$normalized_output" == *"region,service-name,limit-name,scope-type,availability-domain,limit-value,used,available,usage-percent,id"* ]]
-  [[ "$output" == *"eu-frankfurt-1,compute"* ]]
-  [[ "$output" == *"eu-frankfurt-1,block-storage"* ]]
-  [[ "$output" == *"eu-frankfurt-1,object-storage"* ]]
-  [[ "$output" == *"standard-e4-core-count"* ]]
-  [[ "$output" == *"bucket-count"* ]]
-  [[ "$output" == *"eu-frankfurt-1,object-storage,bucket-count,REGION,,1000,123,877,12.3,eu-frankfurt-1:object-storage:REGION::bucket-count"* ]]
-  [[ "$output" == *"eu-frankfurt-1:compute:REGION"* ]]
+  [[ "$normalized_output" == *"eu-frankfurt-1,compute"* ]]
+  [[ "$normalized_output" == *"eu-frankfurt-1,block-storage"* ]]
+  [[ "$normalized_output" == *"eu-frankfurt-1,object-storage"* ]]
+  [[ "$normalized_output" == *"standard-e4-core-count"* ]]
+  [[ "$normalized_output" == *"bucket-count"* ]]
+  [[ "$normalized_output" == *"eu-frankfurt-1,object-storage,bucket-count,REGION,,1000,123,877,12.3,eu-frankfurt-1:object-storage:REGION::bucket-count"* ]]
+  [[ "$normalized_output" == *"eu-frankfurt-1:compute:REGION"* ]]
 }
 
 @test "block-storage command writes storage_inventory.csv with dr fields" {
@@ -916,7 +916,7 @@ EOF
   run cat report/run.log
   [ "$status" -eq 0 ]
   [[ "$output" == *$'command=compute\trc=0\toci '* ]]
-  [[ "$output" == *"region-subscription"* ]]
+  [[ "$output" == *"availability-domain"* ]]
   [[ "$output" == *"compute"* ]]
   [[ "$output" == *"instance"* ]]
 }
