@@ -2,7 +2,6 @@
 
 set -Eeuo pipefail
 
-VERSION="0.1.0"
 DEBUG_MODE="false"
 CURRENT_TOP_COMMAND=""
 RUN_LOG_FILE="${RUN_LOG_FILE:-report/run.log}"
@@ -16,7 +15,6 @@ COLOR_END=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0m" || printf "")
 usage() {
   cat <<USAGE
 Usage: ./oci-tenancy-review <command> [args]
-Version: ${VERSION}
 
 Commands:
   regions        Export reachable/non-blacklisted target region names to report/regions.txt
@@ -117,7 +115,7 @@ fatal() {
 }
 
 
-progress_network_call_request() {
+print_dot() {
   printf '.' >&2
 }
 
@@ -125,21 +123,17 @@ require_cmd() {
   command -v "$1" >/dev/null 2>&1 || fatal "Missing required command: $1"
 }
 
-ensure_run_log_parent_dir() {
-  local parent_dir
-  parent_dir="$(dirname "$RUN_LOG_FILE")"
-  mkdir -p "$parent_dir" 2>/dev/null || true
-}
-
 write_run_log() {
   local rc="$1"
   shift
   local ts
   local oci_cmd
+  local parent_dir
   ts="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
   oci_cmd="$(printf '%q ' oci "$@")"
   oci_cmd="${oci_cmd% }"
-  ensure_run_log_parent_dir
+  parent_dir="$(dirname "$RUN_LOG_FILE")"
+  mkdir -p "$parent_dir" 2>/dev/null || true
   printf '%s\tcommand=%s\trc=%s\t%s\n' "$ts" "${CURRENT_TOP_COMMAND:-unknown}" "$rc" "$oci_cmd" >> "$RUN_LOG_FILE" 2>/dev/null || true
 }
 
@@ -176,7 +170,7 @@ oci_cli() {
   local jitter_seconds
   local wait_seconds
 
-  progress_network_call_request
+  print_dot
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-stderr.XXXXXX")"
   if command oci "$@" 2>"$stderr_file"; then
     rc=0
@@ -206,7 +200,7 @@ oci_cli() {
     wait_seconds=$((bailout_seconds + jitter_seconds))
     warn "oci call rate-limited; retrying once after ${wait_seconds}s"
     sleep "$wait_seconds"
-    progress_network_call_request
+    print_dot
     if command oci "$@"; then
       rc=0
     else
@@ -222,7 +216,7 @@ oci_cli() {
     wait_seconds=$((bailout_seconds + jitter_seconds))
     warn "oci call timed out; retrying once after ${wait_seconds}s"
     sleep "$wait_seconds"
-    progress_network_call_request
+    print_dot
     if command oci "$@"; then
       rc=0
     else
