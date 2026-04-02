@@ -11,6 +11,20 @@ COLOR_GREEN=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0;32m" || printf "
 COLOR_YELLOW=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0;33m" || printf "")
 COLOR_GRAY=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0;90m" || printf "")
 COLOR_END=$([ "$COLORS_ENABLED" == "true" ] && printf "\033[0m" || printf "")
+NETWORK_RESOURCE_KINDS=(
+  vcns
+  subnets
+  security_lists
+  route_tables
+  dhcp_options
+  internet_gateways
+  nat_gateways
+  service_gateways
+  local_peering_gateways
+  network_security_groups
+  network_security_group_rules
+  drg_attachments
+)
 
 usage() {
   cat <<USAGE
@@ -23,6 +37,9 @@ Commands:
   compute        Export compute inventory to report/compute/compute_instances.csv
   compute-region Fetch compute inventory for one region to report/compute/regions/<region>/
   compute-merge  Merge region compute artifacts into report/compute/compute_instances.csv
+  network        Export VCN/network inventory to report/network/*.csv
+  network-region Fetch VCN/network inventory for one region to report/network/regions/<region>/
+  network-merge  Merge region network artifacts into report/network/*.csv
   block-storage        Export block + boot volume inventory to report/storage/storage_inventory.csv
   block-storage-region Fetch block/boot inventory for one region to report/storage/regions/<region>/
   block-storage-merge  Merge region storage artifacts into report/storage/storage_inventory.csv
@@ -38,7 +55,7 @@ Commands:
   limits                Export merged limits posture to report/limits/service_limits.csv
   limits-region         Fetch limits posture for one region to report/limits/regions/<region>/ (optional service scope)
   limits-merge          Merge service-specific limits artifacts into report/limits/service_limits.csv
-  all            Run compartments + policies + compute + block-storage + base-database + object-storage + limits
+  all            Run compartments + policies + compute + network + block-storage + base-database + object-storage + limits
   help           Show this help
 
 Note:
@@ -64,6 +81,9 @@ Examples:
   ./oci-tenancy-review compute
   ./oci-tenancy-review compute-region eu-frankfurt-1
   ./oci-tenancy-review compute-merge
+  ./oci-tenancy-review network
+  ./oci-tenancy-review network-region eu-frankfurt-1
+  ./oci-tenancy-review network-merge
   ./oci-tenancy-review block-storage
   ./oci-tenancy-review block-storage-region eu-frankfurt-1
   ./oci-tenancy-review block-storage-merge
@@ -198,7 +218,7 @@ oci_cli() {
 
 
 init_report_dirs() {
-  mkdir -p report report/compute report/policies report/limits report/storage report/base-database report/object-storage
+  mkdir -p report report/compute report/policies report/limits report/storage report/base-database report/object-storage report/network
 }
 
 require_tenancy() {
@@ -857,6 +877,511 @@ merge_compute_regions() {
   local total
   total="$(jq 'length' report/compute/compute_instances.json)"
   log "Done. ${total} total instances."
+}
+
+network_sort_jq() {
+  case "$1" in
+    vcns) echo 'sort_by(.region, .compartmentPath, .vcnName)' ;;
+    subnets) echo 'sort_by(.region, .compartmentPath, .vcnName, .subnetName)' ;;
+    security_lists) echo 'sort_by(.region, .compartmentPath, .vcnName, .securityListName)' ;;
+    route_tables) echo 'sort_by(.region, .compartmentPath, .vcnName, .routeTableName)' ;;
+    dhcp_options) echo 'sort_by(.region, .compartmentPath, .vcnName, .dhcpOptionsName)' ;;
+    internet_gateways) echo 'sort_by(.region, .compartmentPath, .vcnName, .internetGatewayName)' ;;
+    nat_gateways) echo 'sort_by(.region, .compartmentPath, .vcnName, .natGatewayName)' ;;
+    service_gateways) echo 'sort_by(.region, .compartmentPath, .vcnName, .serviceGatewayName)' ;;
+    local_peering_gateways) echo 'sort_by(.region, .compartmentPath, .vcnName, .localPeeringGatewayName)' ;;
+    network_security_groups) echo 'sort_by(.region, .compartmentPath, .vcnName, .networkSecurityGroupName)' ;;
+    network_security_group_rules) echo 'sort_by(.region, .compartmentPath, .vcnName, .networkSecurityGroupName, .direction, .protocol, .source, .destination)' ;;
+    drg_attachments) echo 'sort_by(.region, .compartmentPath, .vcnName, .attachmentName)' ;;
+    *) fatal "Unsupported network resource kind: $1" ;;
+  esac
+}
+
+network_json_to_csv() {
+  local kind="$1"
+  local json_file="$2"
+  local csv_file="$3"
+
+  case "$kind" in
+    vcns)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","dns-label","vcn-domain-name","cidr-block","cidr-blocks","ipv6-cidr-blocks","is-ipv6-enabled","default-route-table-id","default-security-list-id","default-dhcp-options-id","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.dnsLabel,.vcnDomainName,.cidrBlock,.cidrBlocks,.ipv6CidrBlocks,.isIpv6Enabled,.defaultRouteTableId,.defaultSecurityListId,.defaultDhcpOptionsId,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    subnets)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","subnet-name","availability-domain","dns-label","subnet-domain-name","cidr-block","ipv6-cidr-block","ipv6-cidr-blocks","route-table-id","dhcp-options-id","security-list-ids","prohibit-public-ip-on-vnic","prohibit-internet-ingress","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.subnetName,.availabilityDomain,.dnsLabel,.subnetDomainName,.cidrBlock,.ipv6CidrBlock,.ipv6CidrBlocks,.routeTableId,.dhcpOptionsId,.securityListIds,.prohibitPublicIpOnVnic,.prohibitInternetIngress,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    security_lists)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","security-list-name","ingress-rule-count","egress-rule-count","ingress-rules-json","egress-rules-json","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.securityListName,.ingressRuleCount,.egressRuleCount,.ingressRulesJson,.egressRulesJson,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    route_tables)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","route-table-name","route-rule-count","route-rules-json","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.routeTableName,.routeRuleCount,.routeRulesJson,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    dhcp_options)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","dhcp-options-name","option-count","options-json","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.dhcpOptionsName,.optionCount,.optionsJson,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    internet_gateways)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","internet-gateway-name","is-enabled","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.internetGatewayName,.isEnabled,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    nat_gateways)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","nat-gateway-name","block-traffic","nat-ip","public-ip-id","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.natGatewayName,.blockTraffic,.natIp,.publicIpId,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    service_gateways)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","service-gateway-name","route-table-id","service-count","services-json","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.serviceGatewayName,.routeTableId,.serviceCount,.servicesJson,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    local_peering_gateways)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","local-peering-gateway-name","peer-id","route-table-id","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.localPeeringGatewayName,.peerId,.routeTableId,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    network_security_groups)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","network-security-group-name","rule-count","freeform-tag-count","defined-tag-namespace-count","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.networkSecurityGroupName,.ruleCount,.freeformTagCount,.definedTagNamespaceCount,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    network_security_group_rules)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","network-security-group-name","network-security-group-id","direction","protocol","is-stateless","source","source-type","destination","destination-type","icmp-type","icmp-code","source-port-range","destination-port-range","description","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.networkSecurityGroupName,.networkSecurityGroupId,.direction,.protocol,.isStateless,.source,.sourceType,.destination,.destinationType,.icmpType,.icmpCode,.sourcePortRange,.destinationPortRange,.description,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    drg_attachments)
+      jq -r '
+        ["compartment-id","compartment-path","region","vcn-name","vcn-id","attachment-name","drg-id","attachment-type","drg-route-table-id","vcn-route-table-id","network-id","network-details-json","time-created","lifecycle-state","id"],
+        (.[] | [.compartmentId,.compartmentPath,.region,.vcnName,.vcnId,.attachmentName,.drgId,.attachmentType,.drgRouteTableId,.vcnRouteTableId,.networkId,.networkDetailsJson,.timeCreated,.lifecycleState,.id]) | @csv
+      ' "$json_file" > "$csv_file"
+      ;;
+    *)
+      fatal "Unsupported network resource kind: $kind"
+      ;;
+  esac
+}
+
+prepare_network_region() {
+  local region="$1"
+  local out_dir
+  local target_file
+  local cid_file
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+  [[ -n "$region" ]] || fatal "Region is required"
+
+  out_dir="report/network/regions/${region}"
+  target_file="${out_dir}/network_target_compartments_${region}.csv"
+  cid_file="${out_dir}/.network_cids_${region}.txt"
+  mkdir -p "${out_dir}/compartments"
+  rm -f "${out_dir}/compartments/"*
+  search "query vcn resources" "$target_file" "$region"
+  write_cids_from_targets_csv "$target_file" "$cid_file"
+  local total
+  total="$(wc -l < "$cid_file" | tr -d ' ')"
+  verbose "Done. ${total} target compartments for ${region}."
+}
+
+build_network_compartment_region() {
+  local region="$1"
+  local cid="$2"
+  local out_prefix="$3"
+  local cpath
+  local cpath_file
+  local kind
+  local vcns_raw_file
+  local vcn_json
+  local vcn_id
+  local vcn_name
+  local nsg_json
+  local nsg_id
+  local nsg_name
+  local nsg_rules_json
+  local rule_count
+
+  cpath="$(get_compartment_path "$cid")"
+  cpath_file="$(write_compartment_path_file "$cpath")"
+
+  for kind in "${NETWORK_RESOURCE_KINDS[@]}"; do
+    : > "${out_prefix}.${kind}.jsonl"
+  done
+
+  vcns_raw_file="${out_prefix}.vcns.raw.json"
+  oci_cli network vcn list --compartment-id "$cid" --all --region "$region" --output json > "$vcns_raw_file"
+
+  jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" '
+      .data[]? | {
+        compartmentId: $cid,
+        compartmentPath: $cpath,
+        region: $region,
+        vcnName: (."display-name" // .displayName // ""),
+        dnsLabel: (."dns-label" // .dnsLabel // ""),
+        vcnDomainName: (."vcn-domain-name" // .vcnDomainName // ""),
+        cidrBlock: (."cidr-block" // .cidrBlock // ""),
+        cidrBlocks: ((."cidr-blocks" // .cidrBlocks // []) | map(tostring) | join("|")),
+        ipv6CidrBlocks: ((."ipv6-cidr-blocks" // .ipv6CidrBlocks // []) | map(tostring) | join("|")),
+        isIpv6Enabled: (."is-ipv6enabled" // ."is-ipv6-enabled" // .isIpv6Enabled // false),
+        defaultRouteTableId: (."default-route-table-id" // .defaultRouteTableId // ""),
+        defaultSecurityListId: (."default-security-list-id" // .defaultSecurityListId // ""),
+        defaultDhcpOptionsId: (."default-dhcp-options-id" // .defaultDhcpOptionsId // ""),
+        freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+        definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+        timeCreated: (."time-created" // .timeCreated // ""),
+        id: (.id // "")
+      }
+    ' "$vcns_raw_file" > "${out_prefix}.vcns.jsonl"
+
+  while IFS= read -r vcn_json; do
+    [[ -n "$vcn_json" ]] || continue
+    vcn_id="$(jq -r '.id // empty' <<< "$vcn_json")"
+    [[ -n "$vcn_id" ]] || continue
+    vcn_name="$(jq -r '."display-name" // .displayName // empty' <<< "$vcn_json")"
+
+    oci_cli network subnet list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            subnetName: (."display-name" // .displayName // ""),
+            availabilityDomain: (."availability-domain" // .availabilityDomain // ""),
+            dnsLabel: (."dns-label" // .dnsLabel // ""),
+            subnetDomainName: (."subnet-domain-name" // .subnetDomainName // ""),
+            cidrBlock: (."cidr-block" // .cidrBlock // ""),
+            ipv6CidrBlock: (."ipv6-cidr-block" // .ipv6CidrBlock // ""),
+            ipv6CidrBlocks: ((."ipv6-cidr-blocks" // .ipv6CidrBlocks // []) | map(tostring) | join("|")),
+            routeTableId: (."route-table-id" // .routeTableId // ""),
+            dhcpOptionsId: (."dhcp-options-id" // .dhcpOptionsId // ""),
+            securityListIds: ((."security-list-ids" // .securityListIds // []) | map(tostring) | join("|")),
+            prohibitPublicIpOnVnic: (."prohibit-public-ip-on-vnic" // .prohibitPublicIpOnVnic // false),
+            prohibitInternetIngress: (."prohibit-internet-ingress" // .prohibitInternetIngress // false),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.subnets.jsonl"
+
+    oci_cli network security-list list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            securityListName: (."display-name" // .displayName // ""),
+            ingressRuleCount: ((."ingress-security-rules" // .ingressSecurityRules // []) | length),
+            egressRuleCount: ((."egress-security-rules" // .egressSecurityRules // []) | length),
+            ingressRulesJson: ((."ingress-security-rules" // .ingressSecurityRules // []) | tojson),
+            egressRulesJson: ((."egress-security-rules" // .egressSecurityRules // []) | tojson),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.security_lists.jsonl"
+
+    oci_cli network route-table list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            routeTableName: (."display-name" // .displayName // ""),
+            routeRuleCount: ((."route-rules" // .routeRules // []) | length),
+            routeRulesJson: ((."route-rules" // .routeRules // []) | tojson),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.route_tables.jsonl"
+
+    oci_cli network dhcp-options list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            dhcpOptionsName: (."display-name" // .displayName // ""),
+            optionCount: ((."options" // .options // []) | length),
+            optionsJson: ((."options" // .options // []) | tojson),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.dhcp_options.jsonl"
+
+    oci_cli network internet-gateway list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            internetGatewayName: (."display-name" // .displayName // ""),
+            isEnabled: (."is-enabled" // .isEnabled // false),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.internet_gateways.jsonl"
+
+    oci_cli network nat-gateway list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            natGatewayName: (."display-name" // .displayName // ""),
+            blockTraffic: (."block-traffic" // .blockTraffic // false),
+            natIp: (."nat-ip" // .natIp // ""),
+            publicIpId: (."public-ip-id" // .publicIpId // ""),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.nat_gateways.jsonl"
+
+    oci_cli network service-gateway list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            serviceGatewayName: (."display-name" // .displayName // ""),
+            routeTableId: (."route-table-id" // .routeTableId // ""),
+            serviceCount: ((."services" // .services // []) | length),
+            servicesJson: ((."services" // .services // []) | tojson),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.service_gateways.jsonl"
+
+    oci_cli network local-peering-gateway list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            localPeeringGatewayName: (."display-name" // .displayName // ""),
+            peerId: (."peer-id" // .peerId // ""),
+            routeTableId: (."route-table-id" // .routeTableId // ""),
+            freeformTagCount: ((."freeform-tags" // .freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: ((."defined-tags" // .definedTags // {}) | keys | length),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.local_peering_gateways.jsonl"
+
+    while IFS= read -r nsg_json; do
+      [[ -n "$nsg_json" ]] || continue
+      nsg_id="$(jq -r '.id // empty' <<< "$nsg_json")"
+      [[ -n "$nsg_id" ]] || continue
+      nsg_name="$(jq -r '."display-name" // .displayName // empty' <<< "$nsg_json")"
+      nsg_rules_json="$(oci_cli network nsg rules list --nsg-id "$nsg_id" --all --region "$region" --output json)"
+      rule_count="$(jq -r '(.data // []) | length' <<< "$nsg_rules_json")"
+
+      jq -cn --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --arg ruleCount "$rule_count" --argjson nsg "$nsg_json" '
+          {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            networkSecurityGroupName: ($nsg."display-name" // $nsg.displayName // ""),
+            ruleCount: (($ruleCount | tonumber?) // 0),
+            freeformTagCount: (($nsg."freeform-tags" // $nsg.freeformTags // {}) | keys | length),
+            definedTagNamespaceCount: (($nsg."defined-tags" // $nsg.definedTags // {}) | keys | length),
+            timeCreated: ($nsg."time-created" // $nsg.timeCreated // ""),
+            lifecycleState: ($nsg."lifecycle-state" // $nsg.lifecycleState // ""),
+            id: ($nsg.id // "")
+          }
+        ' >> "${out_prefix}.network_security_groups.jsonl"
+
+      jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --arg nsgId "$nsg_id" --arg nsgName "$nsg_name" '
+          def port_range($node):
+            if $node == null then ""
+            else (($node.min // "") | tostring) + "-" + (($node.max // "") | tostring)
+            end;
+          .data[]? | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            networkSecurityGroupId: $nsgId,
+            networkSecurityGroupName: $nsgName,
+            direction: (."direction" // .direction // ""),
+            protocol: ((."protocol" // .protocol // "") | tostring),
+            isStateless: (."is-stateless" // .isStateless // false),
+            source: (."source" // .source // ""),
+            sourceType: (."source-type" // .sourceType // ""),
+            destination: (."destination" // .destination // ""),
+            destinationType: (."destination-type" // .destinationType // ""),
+            icmpType: (."icmp-options"."type" // .icmpOptions.type // ""),
+            icmpCode: (."icmp-options"."code" // .icmpOptions.code // ""),
+            sourcePortRange: (port_range(."tcp-options"."source-port-range" // .tcpOptions.sourcePortRange // ."udp-options"."source-port-range" // .udpOptions.sourcePortRange // null)),
+            destinationPortRange: (port_range(."tcp-options"."destination-port-range" // .tcpOptions.destinationPortRange // ."udp-options"."destination-port-range" // .udpOptions.destinationPortRange // null)),
+            description: (."description" // .description // ""),
+            id: (.id // ($nsgId + ":" + ((."direction" // .direction // "") | tostring) + ":" + ((."protocol" // .protocol // "") | tostring) + ":" + (."source" // .source // ."destination" // .destination // "")))
+          }
+        ' <<< "$nsg_rules_json" >> "${out_prefix}.network_security_group_rules.jsonl"
+    done < <(oci_cli network nsg list --compartment-id "$cid" --vcn-id "$vcn_id" --all --region "$region" --output json | jq -c '.data[]?')
+
+    oci_cli network drg-attachment list --compartment-id "$cid" --vcn-id "$vcn_id" --attachment-type VCN --all --region "$region" --output json \
+      | jq -c --arg region "$region" --arg cid "$cid" --arg vcnId "$vcn_id" --arg vcnName "$vcn_name" --rawfile cpath "$cpath_file" '
+          .data[]? | (."network-details" // .networkDetails // {}) as $networkDetails | {
+            compartmentId: $cid,
+            compartmentPath: $cpath,
+            region: $region,
+            vcnId: $vcnId,
+            vcnName: $vcnName,
+            attachmentName: (."display-name" // .displayName // ""),
+            drgId: (."drg-id" // .drgId // ""),
+            attachmentType: (."attachment-type" // .attachmentType // "VCN"),
+            drgRouteTableId: (."drg-route-table-id" // .drgRouteTableId // ""),
+            vcnRouteTableId: ($networkDetails."route-table-id" // $networkDetails.routeTableId // ""),
+            networkId: (."network-id" // .networkId // $networkDetails.id // ""),
+            networkDetailsJson: ($networkDetails | tojson),
+            timeCreated: (."time-created" // .timeCreated // ""),
+            lifecycleState: (."lifecycle-state" // .lifecycleState // ""),
+            id: (.id // "")
+          }
+        ' >> "${out_prefix}.drg_attachments.jsonl"
+  done < <(jq -c '.data[]?' "$vcns_raw_file")
+
+  rm -f "$vcns_raw_file" "$cpath_file"
+}
+
+merge_network_region() {
+  local region="$1"
+  local out_dir
+  local kind
+  local jsonl_file
+  local json_file
+  local csv_file
+  out_dir="report/network/regions/${region}"
+
+  for kind in "${NETWORK_RESOURCE_KINDS[@]}"; do
+    jsonl_file="${out_dir}/${kind}.jsonl"
+    json_file="${out_dir}/${kind}.json"
+    csv_file="${out_dir}/${kind}.csv"
+    concat_compartment_parts "${out_dir}/compartments" "*.${kind}.jsonl" "$jsonl_file"
+    jq -s "$(network_sort_jq "$kind")" "$jsonl_file" > "$json_file"
+    network_json_to_csv "$kind" "$json_file" "$csv_file"
+  done
+
+  verbose "wrote region artifact dir '${out_dir}'"
+  local total
+  total="$(jq 'length' "${out_dir}/vcns.json")"
+  verbose "Done. ${total} vcns in ${region}."
+}
+
+build_network_region() {
+  local region="$1"
+  local cid
+  prepare_network_region "$region"
+  while IFS= read -r cid; do
+    [[ -n "$cid" ]] || continue
+    build_network_compartment_region "$region" "$cid" "report/network/regions/${region}/compartments/${cid}"
+  done < "report/network/regions/${region}/.network_cids_${region}.txt"
+  merge_network_region "$region"
+}
+
+merge_network_regions() {
+  init_report_dirs
+  ensure_target_regions
+  local kind
+  local region
+  local f
+  local -a json_files
+  collect_target_regions_array
+
+  for kind in "${NETWORK_RESOURCE_KINDS[@]}"; do
+    json_files=()
+    for region in "${TARGET_REGIONS[@]}"; do
+      f="report/network/regions/${region}/${kind}.json"
+      [[ -s "$f" ]] || fatal "Missing region network artifact: $f"
+      json_files+=("$f")
+    done
+    jq -s "[.[][]] | $(network_sort_jq "$kind")" "${json_files[@]}" > "report/network/${kind}.json"
+    network_json_to_csv "$kind" "report/network/${kind}.json" "report/network/${kind}.csv"
+  done
+
+  {
+    echo "compartment-id,compartment-path"
+    for region in "${TARGET_REGIONS[@]}"; do
+      if [[ -s "report/network/regions/${region}/network_target_compartments_${region}.csv" ]]; then
+        tail -n +2 "report/network/regions/${region}/network_target_compartments_${region}.csv"
+      fi
+    done | sort -u
+  } > report/network/network_target_compartments.csv
+  verbose "wrote 'report/network/network_target_compartments.csv'"
+
+  local total
+  total="$(jq 'length' report/network/vcns.json)"
+  log "Done. ${total} vcns."
+}
+
+build_network() {
+  init_report_dirs
+  require_tenancy
+  ensure_compartments
+  ensure_target_regions
+  local region
+  while IFS= read -r region; do
+    [[ -n "$region" ]] || continue
+    build_network_region "$region"
+  done < <(resolve_target_regions)
+  merge_network_regions
 }
 
 build_storage_region() {
@@ -1710,6 +2235,10 @@ execute_command() {
       [[ $# -eq 3 ]] || fatal "Usage: _compute-compartment <region> <compartment-ocid> <out-file>"
       build_compute_compartment_region "$1" "$2" "$3"
       ;;
+    _network-compartment)
+      [[ $# -eq 3 ]] || fatal "Usage: _network-compartment <region> <compartment-ocid> <out-prefix>"
+      build_network_compartment_region "$1" "$2" "$3"
+      ;;
     _storage-compartment)
       [[ $# -eq 3 ]] || fatal "Usage: _storage-compartment <region> <compartment-ocid> <out-prefix>"
       build_storage_compartment_region "$1" "$2" "$3"
@@ -1737,6 +2266,22 @@ execute_command() {
     compute-merge)
       [[ $# -eq 0 ]] || fatal "Usage: compute-merge"
       merge_compute_regions
+      ;;
+    network-region)
+      [[ $# -eq 1 ]] || fatal "Usage: network-region <region>"
+      build_network_region "$1"
+      ;;
+    network-region-prepare)
+      [[ $# -eq 1 ]] || fatal "Usage: network-region-prepare <region>"
+      prepare_network_region "$1"
+      ;;
+    network-region-merge)
+      [[ $# -eq 1 ]] || fatal "Usage: network-region-merge <region>"
+      merge_network_region "$1"
+      ;;
+    network-merge)
+      [[ $# -eq 0 ]] || fatal "Usage: network-merge"
+      merge_network_regions
       ;;
     policies-prepare)
       [[ $# -eq 0 ]] || fatal "Usage: policies-prepare"
@@ -1828,6 +2373,10 @@ execute_command() {
     compute)
       [[ $# -eq 0 ]] || fatal "Usage: compute"
       build_compute
+      ;;
+    network)
+      [[ $# -eq 0 ]] || fatal "Usage: network"
+      build_network
       ;;
     block-storage)
       [[ $# -eq 0 ]] || fatal "Usage: block-storage"
