@@ -26,3 +26,7 @@ If the user did this, rst formatted docs made available at: `docs/oci-cli/_sourc
 
 The official `oci-python-sdk` (use `git clone git@github.com:oracle/oci-python-sdk.git research/oci-python-sdk` to clone into the gitignored `research/oci-python-sdk`) provides a similar sample tool called `showoci` in its examples subfolder. Feel free to clone and check this tool out for references (`research/oci-python-sdk/examples/showoci`).
 Note: Their focus is a complete overview, our focus is very fast scraping via the OCI cli.
+
+## `cis-compliance-script`
+
+There is also the CIS compliance script capable of producing a BOM. This is the most official Oracle OCI solution that we have right now (though it comes with a few caveats). Use `git clone git@github.com:oci-landing-zones/oci-cis-landingzone-quickstart.git research/oci-cis` to clone into the gitignored `research/oci-cis` directory. This is the reference implementation for BOM discovery, check its implementation against ours. Remember, our goal is to be more targeted/easier and especially have more colums with simple data-types in our CSV structure for easier exploration than they have.
