@@ -15,6 +15,18 @@ all: \
 	report/policies/policy_statements.csv \
 	report/compute/compute_instances.csv \
 	report/compute/compute_shapes_summary.csv \
+	report/network/vcns.csv \
+	report/network/subnets.csv \
+	report/network/security_lists.csv \
+	report/network/route_tables.csv \
+	report/network/dhcp_options.csv \
+	report/network/internet_gateways.csv \
+	report/network/nat_gateways.csv \
+	report/network/service_gateways.csv \
+	report/network/local_peering_gateways.csv \
+	report/network/network_security_groups.csv \
+	report/network/network_security_group_rules.csv \
+	report/network/drg_attachments.csv \
 	report/storage/storage_inventory.csv \
 	report/base-database/base_databases.csv \
 	report/object-storage/buckets_inventory.csv \
@@ -64,6 +76,48 @@ compute-region-%:
 compute-compartment-%:
 	@stem="$*"; region="$${stem%%___CID___*}"; cid="$${stem#*___CID___}"; \
 	$(SCRIPT) _compute-compartment "$$region" "$$cid" "report/compute/regions/$$region/compartments/$$cid.jsonl"
+
+network: \
+	report/network/vcns.csv \
+	report/network/subnets.csv \
+	report/network/security_lists.csv \
+	report/network/route_tables.csv \
+	report/network/dhcp_options.csv \
+	report/network/internet_gateways.csv \
+	report/network/nat_gateways.csv \
+	report/network/service_gateways.csv \
+	report/network/local_peering_gateways.csv \
+	report/network/network_security_groups.csv \
+	report/network/network_security_group_rules.csv \
+	report/network/drg_attachments.csv
+
+report/network/vcns.csv: report/compartments.csv report/regions.txt $(REBUILD_DEPS)
+	@regions="$$(awk 'NF {print "network-region-"$$0}' report/regions.txt)"; \
+	if [[ -n "$$regions" ]]; then $(MAKE) -f "$(SELF_MAKEFILE)" $$regions; fi
+	@$(SCRIPT) network-merge
+
+report/network/subnets.csv \
+report/network/security_lists.csv \
+report/network/route_tables.csv \
+report/network/dhcp_options.csv \
+report/network/internet_gateways.csv \
+report/network/nat_gateways.csv \
+report/network/service_gateways.csv \
+report/network/local_peering_gateways.csv \
+report/network/network_security_groups.csv \
+report/network/network_security_group_rules.csv \
+report/network/drg_attachments.csv: report/network/vcns.csv
+	@[[ -s "$@" ]] || $(SCRIPT) network-merge
+
+network-region-%:
+	@$(SCRIPT) network-region-prepare $*
+	@targets="$$(awk 'NF {print "network-compartment-$*___CID___"$$1}' report/network/regions/$*/.network_cids_$*.txt)"; \
+	if [[ -n "$$targets" ]]; then $(MAKE) -f "$(SELF_MAKEFILE)" $$targets; fi
+	@$(SCRIPT) network-region-merge $*
+
+network-compartment-%:
+	@stem="$*"; region="$${stem%%___CID___*}"; cid="$${stem#*___CID___}"; \
+	$(SCRIPT) _network-compartment "$$region" "$$cid" "report/network/regions/$$region/compartments/$$cid"
 
 block-storage: report/storage/storage_inventory.csv
 
@@ -149,9 +203,11 @@ limits-region-%:
 	if [[ "$$svc" == "$$stem" ]]; then svc="all"; fi; \
 	$(SCRIPT) limits-region "$$region" "$$svc"
 
-.PHONY: all regions compartments policies compute block-storage base-database limits \
+
+.PHONY: all regions compartments policies compute network block-storage base-database limits \
 	compute-limits block-storage-limits object-storage-limits object-storage \
 	policy-compartment-% compute-region-% compute-compartment-% \
+	network-region-% network-compartment-% \
 	block-storage-region-% block-storage-compartment-% \
 	base-database-region-% base-database-compartment-% \
 	object-storage-region-% object-storage-compartment-% limits-region-%

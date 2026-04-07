@@ -4,7 +4,7 @@
 
 This repository provides `./oci-tenancy-review`, a CLI tool to easily generate OCI tenancy bill of materials (BOMs) exported as CSV, compatible with [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm).
 
-We focus on **speed by concurrently scraping specific OCI domains** (e.g. compute, block-storage, base-database, object-storage, limits) rather than providing a full view of a whole OCI tenancy. These CSV artifacts can be cached granularly, making the process resumable.
+We focus on **speed by concurrently scraping specific OCI domains** (e.g. compute, network/VCN, block-storage, base-database, object-storage, limits) rather than providing a full view of a whole OCI tenancy. These CSV artifacts can be cached granularly, making the process resumable.
 
 Here's a sample video on how to quickly download a full archive of usage CSVs of your tenancy via [Cloud Shell](https://docs.oracle.com/en-us/iaas/Content/API/Concepts/cloudshellintro.htm) ([fallback video link](https://objectstorage.eu-frankfurt-1.oraclecloud.com/p/VlWiV3DZA0TZXRVPv3KxWv3Fpp0WaY3BbjtcjfY_M9-v9HrrySN5BJmR9HjItLWD/n/frnhkcj2u67r/b/mranftl_shared/o/oci-tenancy-review/oci-tenancy-review-own-sm.mp4)):   
 
@@ -26,6 +26,18 @@ Here's a sample video on how to quickly download a full archive of usage CSVs of
     - [`report/policies/policy_statements.csv`](#reportpoliciespolicy_statementscsv)
     - [`report/compute/compute_instances.csv`](#reportcomputecompute_instancescsv)
     - [`report/compute/compute_shapes_summary.csv`](#reportcomputecompute_shapes_summarycsv)
+    - [`report/network/vcns.csv`](#reportnetworkvcnscsv)
+    - [`report/network/subnets.csv`](#reportnetworksubnetscsv)
+    - [`report/network/security_lists.csv`](#reportnetworksecurity_listscsv)
+    - [`report/network/route_tables.csv`](#reportnetworkroute_tablescsv)
+    - [`report/network/dhcp_options.csv`](#reportnetworkdhcp_optionscsv)
+    - [`report/network/internet_gateways.csv`](#reportnetworkinternet_gatewayscsv)
+    - [`report/network/nat_gateways.csv`](#reportnetworknat_gatewayscsv)
+    - [`report/network/service_gateways.csv`](#reportnetworkservice_gatewayscsv)
+    - [`report/network/local_peering_gateways.csv`](#reportnetworklocal_peering_gatewayscsv)
+    - [`report/network/network_security_groups.csv`](#reportnetworknetwork_security_groupscsv)
+    - [`report/network/network_security_group_rules.csv`](#reportnetworknetwork_security_group_rulescsv)
+    - [`report/network/drg_attachments.csv`](#reportnetworkdrg_attachmentscsv)
     - [`report/storage/storage_inventory.csv`](#reportstoragestorage_inventorycsv)
     - [`report/object-storage/buckets_inventory.csv`](#reportobject-storagebuckets_inventorycsv)
     - [`report/base-database/base_databases.csv`](#reportbase-databasebase_databasescsv)
@@ -155,7 +167,7 @@ For larger tenancies or repeated runs, use `make` to execute region/compartment 
 make -j 4 --no-print-directory all
 
 # Run specific job runner concurrently
-make -j 4 --no-print-directory regions compartments policies compute block-storage base-database object-storage limits 
+make -j 4 --no-print-directory regions compartments policies compute network block-storage base-database object-storage limits 
 
 # Build a specific CSV artifact (this will execute the dependent runner)
 make -j 4 --no-print-directory report/compute/compute_instances.csv
@@ -201,6 +213,12 @@ Note that the following runs uncached and serial. Use `make -j 4 --no-print-dire
 
 # Build compute inventory for one region at report/compute/regions/<region>/
 ./oci-tenancy-review compute-region eu-frankfurt-1
+
+# Build VCN/network inventory CSVs at report/network/
+./oci-tenancy-review network
+
+# Build VCN/network inventory for one region at report/network/regions/<region>/
+./oci-tenancy-review network-region eu-frankfurt-1
 
 # Build block + boot volume inventory CSV at report/storage/
 ./oci-tenancy-review block-storage
@@ -331,6 +349,235 @@ CSV header:
 - `count`
 
 Shape distribution summary derived from `compute_instances.csv`.
+
+### `report/network/vcns.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `dns-label`
+- `vcn-domain-name`
+- `cidr-block`
+- `cidr-blocks`
+- `ipv6-cidr-blocks`
+- `is-ipv6-enabled`
+- `default-route-table-id`
+- `default-security-list-id`
+- `default-dhcp-options-id`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `id`
+
+### `report/network/subnets.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `subnet-name`
+- `availability-domain`
+- `dns-label`
+- `subnet-domain-name`
+- `cidr-block`
+- `ipv6-cidr-block`
+- `ipv6-cidr-blocks`
+- `route-table-id`
+- `dhcp-options-id`
+- `security-list-ids`
+- `prohibit-public-ip-on-vnic`
+- `prohibit-internet-ingress`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `id`
+
+### `report/network/security_lists.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `security-list-name`
+- `ingress-rule-count`
+- `egress-rule-count`
+- `ingress-rules-json`
+- `egress-rules-json`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/route_tables.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `route-table-name`
+- `route-rule-count`
+- `route-rules-json`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/dhcp_options.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `dhcp-options-name`
+- `option-count`
+- `options-json`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/internet_gateways.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `internet-gateway-name`
+- `is-enabled`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/nat_gateways.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `nat-gateway-name`
+- `block-traffic`
+- `nat-ip`
+- `public-ip-id`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/service_gateways.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `service-gateway-name`
+- `route-table-id`
+- `service-count`
+- `services-json`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/local_peering_gateways.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `local-peering-gateway-name`
+- `peer-id`
+- `route-table-id`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/network_security_groups.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `network-security-group-name`
+- `rule-count`
+- `freeform-tag-count`
+- `defined-tag-namespace-count`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+### `report/network/network_security_group_rules.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `network-security-group-name`
+- `network-security-group-id`
+- `direction`
+- `protocol`
+- `is-stateless`
+- `source`
+- `source-type`
+- `destination`
+- `destination-type`
+- `icmp-type`
+- `icmp-code`
+- `source-port-range`
+- `destination-port-range`
+- `description`
+- `id`
+
+### `report/network/drg_attachments.csv`
+
+CSV header:
+- `compartment-id`
+- `compartment-path`
+- `region`
+- `vcn-name`
+- `vcn-id`
+- `attachment-name`
+- `drg-id`
+- `attachment-type`
+- `drg-route-table-id`
+- `vcn-route-table-id`
+- `network-id`
+- `network-details-json`
+- `time-created`
+- `lifecycle-state`
+- `id`
+
+The network reporter is intended to provide a fast VCN topology snapshot across regions, including core VCN definitions and their attached subnet/routing/security constructs.
 
 ### `report/storage/storage_inventory.csv`
 
@@ -474,6 +721,18 @@ When region workflows are used (for example via `compute`, `block-storage`, `bas
 also writes per-region artifacts:
 
 - `report/compute/regions/<region>/compute_instances.csv`
+- `report/network/regions/<region>/vcns.csv`
+- `report/network/regions/<region>/subnets.csv`
+- `report/network/regions/<region>/security_lists.csv`
+- `report/network/regions/<region>/route_tables.csv`
+- `report/network/regions/<region>/dhcp_options.csv`
+- `report/network/regions/<region>/internet_gateways.csv`
+- `report/network/regions/<region>/nat_gateways.csv`
+- `report/network/regions/<region>/service_gateways.csv`
+- `report/network/regions/<region>/local_peering_gateways.csv`
+- `report/network/regions/<region>/network_security_groups.csv`
+- `report/network/regions/<region>/network_security_group_rules.csv`
+- `report/network/regions/<region>/drg_attachments.csv`
 - `report/storage/regions/<region>/storage_inventory.csv`
 - `report/base-database/regions/<region>/base_databases.csv`
 - `report/object-storage/regions/<region>/buckets_inventory.csv`
@@ -524,6 +783,21 @@ The following mapping summarizes top-level `./oci-tenancy-review` commands and O
 - `compute`, `compute-region`:
   - `oci search resource structured-search` (instance resources)
   - `oci compute instance list`
+
+- `network`, `network-region`:
+  - `oci search resource structured-search` (VCN resources)
+  - `oci network vcn list`
+  - `oci network subnet list`
+  - `oci network security-list list`
+  - `oci network route-table list`
+  - `oci network dhcp-options list`
+  - `oci network internet-gateway list`
+  - `oci network nat-gateway list`
+  - `oci network service-gateway list`
+  - `oci network local-peering-gateway list`
+  - `oci network nsg list`
+  - `oci network nsg rules list`
+  - `oci network drg-attachment list`
 
 - `block-storage`, `block-storage-region`:
   - `oci search resource structured-search` (volume resources)

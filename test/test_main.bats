@@ -198,6 +198,19 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == search\ resource\ structured-search*"query vcn resources"* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "compartment-id": "ocid1.compartment.oc1..child"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 if [[ "$args" == search\ resource\ structured-search*"query volume resources"* ]]; then
   cat <<'JSON'
 {
@@ -387,6 +400,303 @@ if [[ "$args" == db\ database\ list* ]]; then
       "time-created": "2026-01-07T00:00:00+00:00",
       "freeform-tags": {"owner":"dba"},
       "defined-tags": {"Operations":{"CostCenter":"99"}}
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ vcn\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.vcn.oc1..vcn1",
+      "display-name": "core-vcn",
+      "dns-label": "core",
+      "vcn-domain-name": "core.oraclevcn.com",
+      "cidr-block": "10.0.0.0/16",
+      "cidr-blocks": ["10.0.0.0/16"],
+      "ipv6-cidr-blocks": ["2603:c021:4000:abcd::/56"],
+      "is-ipv6-enabled": true,
+      "default-route-table-id": "ocid1.routetable.oc1..rtdefault",
+      "default-security-list-id": "ocid1.securitylist.oc1..sldefault",
+      "default-dhcp-options-id": "ocid1.dhcpoptions.oc1..dhcpdefault",
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-10T00:00:00+00:00"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ subnet\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.subnet.oc1..subnet1",
+      "display-name": "app-subnet",
+      "availability-domain": "AD-1",
+      "dns-label": "app",
+      "subnet-domain-name": "app.core.oraclevcn.com",
+      "cidr-block": "10.0.1.0/24",
+      "ipv6-cidr-block": "2603:c021:4000:abcd:1::/64",
+      "ipv6-cidr-blocks": ["2603:c021:4000:abcd:1::/64"],
+      "route-table-id": "ocid1.routetable.oc1..rt1",
+      "dhcp-options-id": "ocid1.dhcpoptions.oc1..dhcp1",
+      "security-list-ids": ["ocid1.securitylist.oc1..sl1"],
+      "prohibit-public-ip-on-vnic": true,
+      "prohibit-internet-ingress": false,
+      "freeform-tags": {"tier":"app"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ security-list\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.securitylist.oc1..sl1",
+      "display-name": "app-sl",
+      "ingress-security-rules": [
+        {
+          "protocol": "6",
+          "source": "10.0.2.0/24",
+          "source-type": "CIDR_BLOCK",
+          "is-stateless": false,
+          "tcp-options": {
+            "destination-port-range": {
+              "min": 443,
+              "max": 443
+            }
+          },
+          "description": "allow https"
+        }
+      ],
+      "egress-security-rules": [
+        {
+          "protocol": "all",
+          "destination": "0.0.0.0/0",
+          "destination-type": "CIDR_BLOCK",
+          "is-stateless": false,
+          "description": "all egress"
+        }
+      ],
+      "freeform-tags": {"owner":"sec"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ route-table\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.routetable.oc1..rt1",
+      "display-name": "app-rt",
+      "route-rules": [
+        {
+          "destination": "0.0.0.0/0",
+          "destination-type": "CIDR_BLOCK",
+          "network-entity-id": "ocid1.internetgateway.oc1..ig1",
+          "description": "internet access"
+        }
+      ],
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ dhcp-options\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.dhcpoptions.oc1..dhcp1",
+      "display-name": "app-dhcp",
+      "options": [
+        {
+          "type": "DomainNameServer",
+          "server-type": "VcnLocalPlusInternet"
+        }
+      ],
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ internet-gateway\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.internetgateway.oc1..ig1",
+      "display-name": "core-igw",
+      "is-enabled": true,
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ nat-gateway\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.natgateway.oc1..nat1",
+      "display-name": "core-ngw",
+      "block-traffic": false,
+      "nat-ip": "129.146.1.10",
+      "public-ip-id": "ocid1.publicip.oc1..pip1",
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ service-gateway\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.servicegateway.oc1..sgw1",
+      "display-name": "core-sgw",
+      "route-table-id": "ocid1.routetable.oc1..rt1",
+      "services": [
+        {
+          "service-id": "ocid1.service.oc1..all",
+          "service-name": "All Services In Oracle Services Network"
+        }
+      ],
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ local-peering-gateway\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.localpeeringgateway.oc1..lpg1",
+      "display-name": "core-lpg",
+      "peer-id": "ocid1.localpeeringgateway.oc1..peer1",
+      "route-table-id": "ocid1.routetable.oc1..rt1",
+      "freeform-tags": {"owner":"net"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ nsg\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.nsg.oc1..nsg1",
+      "display-name": "app-nsg",
+      "freeform-tags": {"owner":"app"},
+      "defined-tags": {"Operations":{"CostCenter":"42"}},
+      "time-created": "2026-01-11T00:00:00+00:00",
+      "lifecycle-state": "AVAILABLE"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ nsg\ rules\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.nsgrule.oc1..nsgr1",
+      "direction": "INGRESS",
+      "protocol": "6",
+      "is-stateless": false,
+      "source": "10.0.1.0/24",
+      "source-type": "CIDR_BLOCK",
+      "tcp-options": {
+        "destination-port-range": {
+          "min": 22,
+          "max": 22
+        }
+      },
+      "description": "ssh"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == network\ drg-attachment\ list* ]]; then
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.drgattachment.oc1..da1",
+      "display-name": "core-vcn-drg",
+      "drg-id": "ocid1.drg.oc1..drg1",
+      "attachment-type": "VCN",
+      "drg-route-table-id": "ocid1.drgroutetable.oc1..drgrt1",
+      "network-id": "ocid1.vcn.oc1..vcn1",
+      "network-details": {
+        "route-table-id": "ocid1.routetable.oc1..rt1"
+      },
+      "time-created": "2026-01-12T00:00:00+00:00",
+      "lifecycle-state": "ATTACHED"
     }
   ]
 }
@@ -741,6 +1051,47 @@ EOF
   [[ "$output" == *",true,true,true,true,"* ]]
 }
 
+@test "network command writes VCN inventory CSVs" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" network
+  [ "$status" -eq 0 ]
+  [ -f report/network/vcns.csv ]
+  [ -f report/network/subnets.csv ]
+  [ -f report/network/security_lists.csv ]
+  [ -f report/network/route_tables.csv ]
+  [ -f report/network/network_security_groups.csv ]
+  [ -f report/network/network_security_group_rules.csv ]
+  [ -f report/network/drg_attachments.csv ]
+
+  run cat report/network/vcns.csv
+  [ "$status" -eq 0 ]
+  local normalized_vcns="${output//\"/}"
+  [[ "$normalized_vcns" == *"compartment-id,compartment-path,region,vcn-name,dns-label,vcn-domain-name,cidr-block"* ]]
+  [[ "$normalized_vcns" == *"ocid1.compartment.oc1..child,child,eu-frankfurt-1,core-vcn,core,core.oraclevcn.com,10.0.0.0/16"* ]]
+
+  run cat report/network/subnets.csv
+  [ "$status" -eq 0 ]
+  local normalized_subnets="${output//\"/}"
+  [[ "$normalized_subnets" == *"app-subnet"* ]]
+  [[ "$normalized_subnets" == *"ocid1.securitylist.oc1..sl1"* ]]
+  [[ "$normalized_subnets" == *"true,false"* ]]
+
+  run cat report/network/network_security_group_rules.csv
+  [ "$status" -eq 0 ]
+  local normalized_nsg_rules="${output//\"/}"
+  [[ "$normalized_nsg_rules" == *"app-nsg"* ]]
+  [[ "$normalized_nsg_rules" == *"INGRESS,6,false,10.0.1.0/24,CIDR_BLOCK"* ]]
+  [[ "$normalized_nsg_rules" == *"22-22"* ]]
+
+  run cat report/network/drg_attachments.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"core-vcn-drg"* ]]
+  [[ "$output" == *"ocid1.drg.oc1..drg1"* ]]
+}
+
 @test "compute skips unreachable regions from REGIONS" {
   cd "$WORKDIR"
   export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
@@ -789,9 +1140,20 @@ EOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"policy-compartment-%:"* ]]
   [[ "$output" == *"compute-compartment-%:"* ]]
+  [[ "$output" == *"network-compartment-%:"* ]]
   [[ "$output" == *"block-storage-compartment-%:"* ]]
   [[ "$output" == *"base-database-compartment-%:"* ]]
   [[ "$output" == *"object-storage-compartment-%:"* ]]
+}
+
+@test "network-region writes region-scoped artifacts" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+
+  run "$SCRIPT_PATH" network-region eu-frankfurt-1
+  [ "$status" -eq 0 ]
+  [ -f report/network/regions/eu-frankfurt-1/vcns.json ]
+  [ -f report/network/regions/eu-frankfurt-1/subnets.csv ]
 }
 
 @test "block-storage-region writes region-scoped artifacts" {
@@ -947,6 +1309,18 @@ EOF
         *"oci_cli iam compartment list"* ) ;;
         *"oci_cli iam policy list"* ) ;;
         *"oci_cli compute instance list"* ) ;;
+        *"oci_cli network vcn list"* ) ;;
+        *"oci_cli network subnet list"* ) ;;
+        *"oci_cli network security-list list"* ) ;;
+        *"oci_cli network route-table list"* ) ;;
+        *"oci_cli network dhcp-options list"* ) ;;
+        *"oci_cli network internet-gateway list"* ) ;;
+        *"oci_cli network nat-gateway list"* ) ;;
+        *"oci_cli network service-gateway list"* ) ;;
+        *"oci_cli network local-peering-gateway list"* ) ;;
+        *"oci_cli network nsg list"* ) ;;
+        *"oci_cli network nsg rules list"* ) ;;
+        *"oci_cli network drg-attachment list"* ) ;;
         *"oci_cli bv volume list"* ) ;;
         *"oci_cli bv boot-volume list"* ) ;;
         *"oci_cli bv backup list"* ) ;;
@@ -981,6 +1355,18 @@ EOF
   [[ "$output" == *"report/policies/policy_statements.csv \\"* ]]
   [[ "$output" == *"report/compute/compute_instances.csv \\"* ]]
   [[ "$output" == *"report/compute/compute_shapes_summary.csv \\"* ]]
+  [[ "$output" == *"report/network/vcns.csv \\"* ]]
+  [[ "$output" == *"report/network/subnets.csv \\"* ]]
+  [[ "$output" == *"report/network/security_lists.csv \\"* ]]
+  [[ "$output" == *"report/network/route_tables.csv \\"* ]]
+  [[ "$output" == *"report/network/dhcp_options.csv \\"* ]]
+  [[ "$output" == *"report/network/internet_gateways.csv \\"* ]]
+  [[ "$output" == *"report/network/nat_gateways.csv \\"* ]]
+  [[ "$output" == *"report/network/service_gateways.csv \\"* ]]
+  [[ "$output" == *"report/network/local_peering_gateways.csv \\"* ]]
+  [[ "$output" == *"report/network/network_security_groups.csv \\"* ]]
+  [[ "$output" == *"report/network/network_security_group_rules.csv \\"* ]]
+  [[ "$output" == *"report/network/drg_attachments.csv \\"* ]]
   [[ "$output" == *"report/storage/storage_inventory.csv \\"* ]]
   [[ "$output" == *"report/base-database/base_databases.csv \\"* ]]
   [[ "$output" == *"report/object-storage/buckets_inventory.csv \\"* ]]
@@ -996,6 +1382,10 @@ EOF
   [[ "$output" == *"report/compute/compute_instances.csv: report/compartments.csv report/regions.txt"* ]]
   [[ "$output" == *'report/compute/compute_instances.csv: report/compartments.csv report/regions.txt $(REBUILD_DEPS)'* ]]
   [[ "$output" == *"compute-region-%:"* ]]
+  [[ "$output" == *"network: \\"* ]]
+  [[ "$output" == *"report/network/vcns.csv: report/compartments.csv report/regions.txt"* ]]
+  [[ "$output" == *'report/network/vcns.csv: report/compartments.csv report/regions.txt $(REBUILD_DEPS)'* ]]
+  [[ "$output" == *"network-region-%:"* ]]
   [[ "$output" == *"block-storage: report/storage/storage_inventory.csv"* ]]
   [[ "$output" == *"block-storage-region-%:"* ]]
   [[ "$output" == *"base-database: report/base-database/base_databases.csv"* ]]
