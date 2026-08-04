@@ -361,7 +361,6 @@ if [[ "$args" == db\ database\ list* ]]; then
       "db-name": "APPDB",
       "db-unique-name": "APPDB_iad1",
       "db-workload": "OLTP",
-      "db-version": "19c",
       "db-system-id": "ocid1.dbsystem.oc1..s1",
       "db-home-id": "ocid1.dbhome.oc1..h1",
       "vm-cluster-id": null,
@@ -377,7 +376,6 @@ if [[ "$args" == db\ database\ list* ]]; then
       "key-store-id": "ocid1.keystore.oc1..ks1",
       "key-store-wallet-name": "WLT1",
       "vault-id": "ocid1.vault.oc1..v1",
-      "database-software-image-id": "ocid1.dbsoftwareimage.oc1..img1",
       "sid-prefix": "DB",
       "last-backup-timestamp": "2026-01-08T00:00:00+00:00",
       "last-failed-backup-timestamp": "2026-01-09T00:00:00+00:00",
@@ -398,6 +396,26 @@ JSON
   exit 0
 fi
 
+if [[ "$args" == db\ db-home\ list* ]]; then
+  if [[ " $args " != *" --all "* ]]; then
+    echo "db db-home list must request all pages" >&2
+    exit 1
+  fi
+  cat <<'JSON'
+{
+  "data": [
+    {
+      "id": "ocid1.dbhome.oc1..h1",
+      "db-system-id": "ocid1.dbsystem.oc1..s1",
+      "db-version": "19c",
+      "database-software-image-id": "ocid1.dbsoftwareimage.oc1..img1"
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
 if [[ "$args" == db\ system\ list* ]]; then
   if [[ "${OCI_TEST_DB_LEGACY:-false}" == "true" ]]; then
     compute_fields="\"cpu-core-count\": ${OCI_TEST_DB_CPU_CORE_COUNT:-2}"
@@ -411,12 +429,30 @@ if [[ "$args" == db\ system\ list* ]]; then
       "id": "ocid1.dbsystem.oc1..s1",
       "shape": "VM.Standard.E5.Flex",
       ${compute_fields},
-      "memory-size-in-gbs": 128,
+      "memory-size-in-gbs": ${OCI_TEST_DB_SYSTEM_LIST_MEMORY:-128},
       "data-storage-size-in-gbs": 1024,
       "reco-storage-size-in-gb": 256,
       "node-count": 1
     }
   ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == db\ system\ get* ]]; then
+  cat <<'JSON'
+{
+  "data": {
+    "id": "ocid1.dbsystem.oc1..s1",
+    "shape": "VM.Standard.E5.Flex",
+    "compute-model": "ECPU",
+    "compute-count": 8,
+    "memory-size-in-gbs": 64,
+    "data-storage-size-in-gbs": 1024,
+    "reco-storage-size-in-gb": 256,
+    "node-count": 1
+  }
 }
 JSON
   exit 0
@@ -881,6 +917,23 @@ EOF
   [ "$status" -eq 0 ]
 }
 
+@test "base-database gets full DB system details when list omits memory" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_SYSTEM_LIST_MEMORY="null"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e '
+    .[0]
+    | .dbVersion == "19c"
+      and .memorySizeInGbs == 64
+  ' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+}
+
 @test "object-storage command writes buckets_inventory.csv" {
   cd "$WORKDIR"
   export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
@@ -1018,6 +1071,8 @@ EOF
         *"oci_cli limits value list"* ) ;;
         *"oci_cli limits resource-availability get"* ) ;;
         *"oci_cli db database list"* ) ;;
+        *"oci_cli db db-home list"* ) ;;
+        *"oci_cli db system get"* ) ;;
         *"oci_cli db system list"* ) ;;
         *"oci_cli os bucket get"* ) ;;
         *"oci_cli os bucket list"* ) ;;

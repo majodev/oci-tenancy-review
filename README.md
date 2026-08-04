@@ -447,7 +447,7 @@ CSV header:
 - `time-created`
 - `id`
 
-Sizing is joined to every database by `db-system-id` from one paginated DB system list per target compartment. Following Oracle's [Base Database compute model semantics](https://docs.oracle.com/en-us/iaas/tools/oci-cli/latest/oci_cli_docs/cmdref/db/system/update.html), `compute-count` is exported as either ECPUs or OCPUs according to `compute-model`; the older `cpu-core-count` representation is exported as OCPUs with an empty `compute-model`.
+DB version is joined by `db-home-id` from one paginated DB Home list per target compartment. Sizing is joined by `db-system-id` from one paginated DB system list; when that summary omits memory, the full DB system is fetched once to complete its sizing. Following Oracle's [Base Database compute model semantics](https://docs.oracle.com/en-us/iaas/tools/oci-cli/latest/oci_cli_docs/cmdref/db/system/update.html), `compute-count` is exported as either ECPUs or OCPUs according to `compute-model`; the older `cpu-core-count` representation is exported as OCPUs with an empty `compute-model`.
 
 ### `report/limits/service_limits.csv`
 
@@ -547,6 +547,8 @@ The following mapping summarizes top-level `./oci-tenancy-review` commands and O
 
 - `base-database`, `base-database-region`:
   - `oci search resource structured-search` (database resources)
+  - `oci db db-home list`
+  - `oci db system get` (only when the list summary omits memory)
   - `oci db system list`
   - `oci db database list`
 

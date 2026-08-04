@@ -1343,24 +1343,79 @@ build_base_database_compartment_region() {
   local out_file="$3"
   local cpath
   local cpath_file
+  local databases_file
+  local db_homes_file
+  local db_system_details_file
+  local db_system_ids_file
   local db_systems_file
+  local db_system_id
   local rc
   cpath="$(get_compartment_path "$cid")"
   cpath_file="$(write_compartment_path_file "$cpath")"
+  databases_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-databases.XXXXXX")"
+  db_homes_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-homes.XXXXXX")"
+  db_system_details_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-system-details.XXXXXX")"
+  db_system_ids_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-system-ids.XXXXXX")"
   db_systems_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-systems.XXXXXX")"
   if oci_cli db system list --compartment-id "$cid" --region "$region" --all --output json > "$db_systems_file"; then
     :
   else
     rc=$?
-    rm -f "$cpath_file" "$db_systems_file"
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
     return "$rc"
   fi
-  if oci_cli db database list --compartment-id "$cid" --region "$region" --output json \
-    | jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" --slurpfile dbSystems "$db_systems_file" '
+  if oci_cli db db-home list --compartment-id "$cid" --region "$region" --all --output json > "$db_homes_file"; then
+    :
+  else
+    rc=$?
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    return "$rc"
+  fi
+  if oci_cli db database list --compartment-id "$cid" --region "$region" --output json > "$databases_file"; then
+    :
+  else
+    rc=$?
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    return "$rc"
+  fi
+  if jq -r --slurpfile dbSystems "$db_systems_file" '
+      ($dbSystems[0].data // []) as $systems
+      | .data[]?
+      | (."db-system-id" // .dbSystemId // "") as $dbSystemId
+      | select($dbSystemId != "")
+      | (($systems | map(select((.id // "") == $dbSystemId)) | .[0]) // {}) as $system
+      | select(($system."memory-size-in-gbs" // $system.memorySizeInGbs // "") == "")
+      | $dbSystemId
+    ' "$databases_file" | sort -u > "$db_system_ids_file"; then
+    :
+  else
+    rc=$?
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    return "$rc"
+  fi
+  while IFS= read -r db_system_id; do
+    [[ -n "$db_system_id" ]] || continue
+    if oci_cli db system get --db-system-id "$db_system_id" --region "$region" --output json \
+      | jq -c '.data' >> "$db_system_details_file"; then
+      :
+    else
+      rc=$?
+      rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+      return "$rc"
+    fi
+  done < "$db_system_ids_file"
+  if jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" \
+    --slurpfile dbHomes "$db_homes_file" \
+    --slurpfile dbSystemDetails "$db_system_details_file" \
+    --slurpfile dbSystems "$db_systems_file" '
         .data[]?
         | (."db-backup-config" // .dbBackupConfig // {}) as $b
+        | (."db-home-id" // .dbHomeId // "") as $dbHomeId
         | (."db-system-id" // .dbSystemId // "") as $dbSystemId
-        | (($dbSystems[0].data // []) | map(select((.id // "") == $dbSystemId)) | .[0] // {}) as $s
+        | (($dbHomes[0].data // []) | map(select((.id // "") == $dbHomeId)) | .[0] // {}) as $h
+        | (($dbSystemDetails // []) | map(select((.id // "") == $dbSystemId)) | .[0]) as $systemDetails
+        | (($dbSystems[0].data // []) | map(select((.id // "") == $dbSystemId)) | .[0]) as $systemSummary
+        | ($systemDetails // $systemSummary // {}) as $s
         | ($s."compute-model" // $s.computeModel // "") as $computeModel
         | {
           compartmentId: $cid,
@@ -1369,7 +1424,7 @@ build_base_database_compartment_region() {
           dbName: (."db-name" // .dbName // ."display-name" // ""),
           dbUniqueName: (."db-unique-name" // .dbUniqueName // ""),
           dbWorkload: (."db-workload" // .dbWorkload // ""),
-          dbVersion: (."db-version" // .dbVersion // ""),
+          dbVersion: ($h."db-version" // $h.dbVersion // ."db-version" // .dbVersion // ""),
           dbSystemId: $dbSystemId,
           dbSystemShape: ($s.shape // ""),
           computeModel: $computeModel,
@@ -1384,7 +1439,7 @@ build_base_database_compartment_region() {
           dataStorageSizeInGbs: ($s."data-storage-size-in-gbs" // $s.dataStorageSizeInGbs // ""),
           recoStorageSizeInGb: ($s."reco-storage-size-in-gb" // $s.recoStorageSizeInGb // ""),
           nodeCount: ($s."node-count" // $s.nodeCount // ""),
-          dbHomeId: (."db-home-id" // .dbHomeId // ""),
+          dbHomeId: $dbHomeId,
           vmClusterId: (."vm-cluster-id" // .vmClusterId // ""),
           cdbName: (."cdb-name" // .cdbName // ""),
           pdbName: (."pdb-name" // .pdbName // ""),
@@ -1398,7 +1453,7 @@ build_base_database_compartment_region() {
           keyStoreId: (."key-store-id" // .keyStoreId // ""),
           keyStoreWalletName: (."key-store-wallet-name" // .keyStoreWalletName // ""),
           vaultId: (."vault-id" // .vaultId // ""),
-          databaseSoftwareImageId: (."database-software-image-id" // .databaseSoftwareImageId // ""),
+          databaseSoftwareImageId: (."database-software-image-id" // .databaseSoftwareImageId // $h."database-software-image-id" // $h.databaseSoftwareImageId // ""),
           sidPrefix: (."sid-prefix" // .sidPrefix // ""),
           autoBackupEnabled: ($b."auto-backup-enabled" // $b.autoBackupEnabled // false),
           backupRecoveryWindowInDays: ($b."recovery-window-in-days" // $b.recoveryWindowInDays // ""),
@@ -1412,12 +1467,12 @@ build_base_database_compartment_region() {
           timeCreated: (."time-created" // .timeCreated // ""),
           id: (.id // "")
         }
-      ' > "$out_file"; then
+      ' "$databases_file" > "$out_file"; then
     rc=0
   else
     rc=$?
   fi
-  rm -f "$cpath_file" "$db_systems_file"
+  rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
   return "$rc"
 }
 
