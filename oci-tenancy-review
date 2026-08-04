@@ -1343,12 +1343,25 @@ build_base_database_compartment_region() {
   local out_file="$3"
   local cpath
   local cpath_file
+  local db_systems_file
+  local rc
   cpath="$(get_compartment_path "$cid")"
   cpath_file="$(write_compartment_path_file "$cpath")"
-  oci_cli db database list --compartment-id "$cid" --region "$region" --output json \
-    | jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" '
+  db_systems_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-systems.XXXXXX")"
+  if oci_cli db system list --compartment-id "$cid" --region "$region" --all --output json > "$db_systems_file"; then
+    :
+  else
+    rc=$?
+    rm -f "$cpath_file" "$db_systems_file"
+    return "$rc"
+  fi
+  if oci_cli db database list --compartment-id "$cid" --region "$region" --output json \
+    | jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" --slurpfile dbSystems "$db_systems_file" '
         .data[]?
         | (."db-backup-config" // .dbBackupConfig // {}) as $b
+        | (."db-system-id" // .dbSystemId // "") as $dbSystemId
+        | (($dbSystems[0].data // []) | map(select((.id // "") == $dbSystemId)) | .[0] // {}) as $s
+        | ($s."compute-model" // $s.computeModel // "") as $computeModel
         | {
           compartmentId: $cid,
           compartmentPath: $cpath,
@@ -1357,7 +1370,20 @@ build_base_database_compartment_region() {
           dbUniqueName: (."db-unique-name" // .dbUniqueName // ""),
           dbWorkload: (."db-workload" // .dbWorkload // ""),
           dbVersion: (."db-version" // .dbVersion // ""),
-          dbSystemId: (."db-system-id" // .dbSystemId // ""),
+          dbSystemId: $dbSystemId,
+          dbSystemShape: ($s.shape // ""),
+          computeModel: $computeModel,
+          ecpuCount: (if $computeModel == "ECPU" then ($s."compute-count" // $s.computeCount // "") else "" end),
+          ocpuCount: (
+            if $computeModel == "OCPU" then ($s."compute-count" // $s.computeCount // "")
+            elif $computeModel == "" then ($s."cpu-core-count" // $s.cpuCoreCount // "")
+            else ""
+            end
+          ),
+          memorySizeInGbs: ($s."memory-size-in-gbs" // $s.memorySizeInGbs // ""),
+          dataStorageSizeInGbs: ($s."data-storage-size-in-gbs" // $s.dataStorageSizeInGbs // ""),
+          recoStorageSizeInGb: ($s."reco-storage-size-in-gb" // $s.recoStorageSizeInGb // ""),
+          nodeCount: ($s."node-count" // $s.nodeCount // ""),
           dbHomeId: (."db-home-id" // .dbHomeId // ""),
           vmClusterId: (."vm-cluster-id" // .vmClusterId // ""),
           cdbName: (."cdb-name" // .cdbName // ""),
@@ -1386,8 +1412,13 @@ build_base_database_compartment_region() {
           timeCreated: (."time-created" // .timeCreated // ""),
           id: (.id // "")
         }
-      ' > "$out_file"
-  rm -f "$cpath_file"
+      ' > "$out_file"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  rm -f "$cpath_file" "$db_systems_file"
+  return "$rc"
 }
 
 prepare_base_database_region() {
@@ -1425,8 +1456,8 @@ merge_base_database_region() {
   concat_compartment_parts "${out_dir}/compartments" "*.jsonl" "$jsonl_file"
   jq -s 'sort_by(.region, .compartmentPath, .dbName)' "$jsonl_file" > "$json_file"
   jq -r '
-    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
-    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
+    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-system-shape","compute-model","ecpu-count","ocpu-count","memory-size-in-gbs","data-storage-size-in-gbs","reco-storage-size-in-gb","node-count","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbSystemShape, .computeModel, .ecpuCount, .ocpuCount, .memorySizeInGbs, .dataStorageSizeInGbs, .recoStorageSizeInGb, .nodeCount, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
   ' "$json_file" > "$csv_file"
   verbose "wrote region artifact dir '${out_dir}'"
   local total
@@ -1473,8 +1504,8 @@ merge_base_database_regions() {
   verbose "wrote 'report/base-database/base_database_target_compartments.csv'"
 
   jq -r '
-    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
-    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
+    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-system-shape","compute-model","ecpu-count","ocpu-count","memory-size-in-gbs","data-storage-size-in-gbs","reco-storage-size-in-gb","node-count","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbSystemShape, .computeModel, .ecpuCount, .ocpuCount, .memorySizeInGbs, .dataStorageSizeInGbs, .recoStorageSizeInGb, .nodeCount, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
   ' report/base-database/base_databases.json > report/base-database/base_databases.csv
   verbose "wrote 'report/base-database/base_databases.csv'"
   local total

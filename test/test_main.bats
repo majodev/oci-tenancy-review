@@ -349,6 +349,10 @@ JSON
 fi
 
 if [[ "$args" == db\ database\ list* ]]; then
+  if [[ " $args " == *" --all "* ]]; then
+    echo "db database list does not support --all" >&2
+    exit 1
+  fi
   cat <<'JSON'
 {
   "data": [
@@ -387,6 +391,30 @@ if [[ "$args" == db\ database\ list* ]]; then
       "time-created": "2026-01-07T00:00:00+00:00",
       "freeform-tags": {"owner":"dba"},
       "defined-tags": {"Operations":{"CostCenter":"99"}}
+    }
+  ]
+}
+JSON
+  exit 0
+fi
+
+if [[ "$args" == db\ system\ list* ]]; then
+  if [[ "${OCI_TEST_DB_LEGACY:-false}" == "true" ]]; then
+    compute_fields="\"cpu-core-count\": ${OCI_TEST_DB_CPU_CORE_COUNT:-2}"
+  else
+    compute_fields="\"compute-model\": \"${OCI_TEST_DB_COMPUTE_MODEL:-ECPU}\", \"compute-count\": ${OCI_TEST_DB_COMPUTE_COUNT:-8}"
+  fi
+  cat <<JSON
+{
+  "data": [
+    {
+      "id": "ocid1.dbsystem.oc1..s1",
+      "shape": "VM.Standard.E5.Flex",
+      ${compute_fields},
+      "memory-size-in-gbs": 128,
+      "data-storage-size-in-gbs": 1024,
+      "reco-storage-size-in-gb": 256,
+      "node-count": 1
     }
   ]
 }
@@ -815,8 +843,42 @@ EOF
   run cat report/base-database/base_databases.csv
   [ "$status" -eq 0 ]
   local normalized_output="${output//\"/}"
-  [[ "$normalized_output" == *"compartment-id,compartment-path,region,db-name,db-unique-name,db-workload,db-version,db-system-id,db-home-id,vm-cluster-id,cdb-name,pdb-name,lifecycle-state,lifecycle-details,character-set,ncharacter-set,is-cdb,kms-key-id,kms-key-version-id,key-store-id,key-store-wallet-name,vault-id,database-software-image-id,sid-prefix,auto-backup-enabled,backup-recovery-window-in-days,backup-destination-type,auto-full-backup-day,last-backup-timestamp,last-failed-backup-timestamp,last-backup-duration-in-seconds,freeform-tag-count,defined-tag-namespace-count,time-created,id"* ]]
-  [[ "$output" == *"\"ocid1.compartment.oc1..child\",\"child\",\"eu-frankfurt-1\",\"APPDB\",\"APPDB_iad1\",\"OLTP\",\"19c\",\"ocid1.dbsystem.oc1..s1\",\"ocid1.dbhome.oc1..h1\",\"\",\"CDB1\",\"PDB1\",\"AVAILABLE\",\"Primary DB\",\"AL32UTF8\",\"AL16UTF16\",true,\"ocid1.key.oc1..kdb1\",\"ocid1.keyversion.oc1..kv1\",\"ocid1.keystore.oc1..ks1\",\"WLT1\",\"ocid1.vault.oc1..v1\",\"ocid1.dbsoftwareimage.oc1..img1\",\"DB\",true,7,\"NFS\",\"SUNDAY\",\"2026-01-08T00:00:00+00:00\",\"2026-01-09T00:00:00+00:00\",1234,1,1,\"2026-01-07T00:00:00+00:00\",\"ocid1.database.oc1..d1\""* ]]
+  [[ "$normalized_output" == *"compartment-id,compartment-path,region,db-name,db-unique-name,db-workload,db-version,db-system-id,db-system-shape,compute-model,ecpu-count,ocpu-count,memory-size-in-gbs,data-storage-size-in-gbs,reco-storage-size-in-gb,node-count,db-home-id,vm-cluster-id,cdb-name,pdb-name,lifecycle-state,lifecycle-details,character-set,ncharacter-set,is-cdb,kms-key-id,kms-key-version-id,key-store-id,key-store-wallet-name,vault-id,database-software-image-id,sid-prefix,auto-backup-enabled,backup-recovery-window-in-days,backup-destination-type,auto-full-backup-day,last-backup-timestamp,last-failed-backup-timestamp,last-backup-duration-in-seconds,freeform-tag-count,defined-tag-namespace-count,time-created,id"* ]]
+  [[ "$output" == *"\"ocid1.compartment.oc1..child\",\"child\",\"eu-frankfurt-1\",\"APPDB\",\"APPDB_iad1\",\"OLTP\",\"19c\",\"ocid1.dbsystem.oc1..s1\",\"VM.Standard.E5.Flex\",\"ECPU\",8,\"\",128,1024,256,1,\"ocid1.dbhome.oc1..h1\",\"\",\"CDB1\",\"PDB1\",\"AVAILABLE\",\"Primary DB\",\"AL32UTF8\",\"AL16UTF16\",true,\"ocid1.key.oc1..kdb1\",\"ocid1.keyversion.oc1..kv1\",\"ocid1.keystore.oc1..ks1\",\"WLT1\",\"ocid1.vault.oc1..v1\",\"ocid1.dbsoftwareimage.oc1..img1\",\"DB\",true,7,\"NFS\",\"SUNDAY\",\"2026-01-08T00:00:00+00:00\",\"2026-01-09T00:00:00+00:00\",1234,1,1,\"2026-01-07T00:00:00+00:00\",\"ocid1.database.oc1..d1\""* ]]
+}
+
+@test "base-database keeps ECPU and OCPU counts mutually exclusive" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_COMPUTE_MODEL="OCPU"
+  export OCI_TEST_DB_COMPUTE_COUNT=4
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run cat report/base-database/base_databases.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"\"OCPU\",\"\",4,128,1024,256,1"* ]]
+}
+
+@test "base-database maps legacy cpu-core-count to OCPU only" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_LEGACY="true"
+  export OCI_TEST_DB_CPU_CORE_COUNT=2
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e '
+    .[0]
+    | .computeModel == ""
+      and .ecpuCount == ""
+      and .ocpuCount == 2
+  ' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
 }
 
 @test "object-storage command writes buckets_inventory.csv" {
@@ -956,6 +1018,7 @@ EOF
         *"oci_cli limits value list"* ) ;;
         *"oci_cli limits resource-availability get"* ) ;;
         *"oci_cli db database list"* ) ;;
+        *"oci_cli db system list"* ) ;;
         *"oci_cli os bucket get"* ) ;;
         *"oci_cli os bucket list"* ) ;;
         *"oci_cli os ns get"* ) ;;

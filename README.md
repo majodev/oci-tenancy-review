@@ -411,6 +411,14 @@ CSV header:
 - `db-workload`
 - `db-version`
 - `db-system-id`
+- `db-system-shape`
+- `compute-model` (`ECPU`, `OCPU`, or empty for DB systems using legacy `cpu-core-count`)
+- `ecpu-count` (populated only when `compute-model=ECPU`)
+- `ocpu-count` (populated for OCPU and legacy `cpu-core-count` DB systems)
+- `memory-size-in-gbs`
+- `data-storage-size-in-gbs`
+- `reco-storage-size-in-gb`
+- `node-count`
 - `db-home-id`
 - `vm-cluster-id`
 - `cdb-name`
@@ -438,6 +446,8 @@ CSV header:
 - `defined-tag-namespace-count`
 - `time-created`
 - `id`
+
+Sizing is joined to every database by `db-system-id` from one paginated DB system list per target compartment. Following Oracle's [Base Database compute model semantics](https://docs.oracle.com/en-us/iaas/tools/oci-cli/latest/oci_cli_docs/cmdref/db/system/update.html), `compute-count` is exported as either ECPUs or OCPUs according to `compute-model`; the older `cpu-core-count` representation is exported as OCPUs with an empty `compute-model`.
 
 ### `report/limits/service_limits.csv`
 
@@ -537,6 +547,7 @@ The following mapping summarizes top-level `./oci-tenancy-review` commands and O
 
 - `base-database`, `base-database-region`:
   - `oci search resource structured-search` (database resources)
+  - `oci db system list`
   - `oci db database list`
 
 - `object-storage`, `object-storage-region`:
