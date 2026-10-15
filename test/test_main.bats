@@ -8,6 +8,7 @@ setup() {
   mkdir -p "$WORKDIR"
   export OCI_TEST_THROTTLE_STATE_FILE="$TMPDIR_TEST/oci_throttle_state"
   export OCI_TEST_TIMEOUT_STATE_FILE="$TMPDIR_TEST/oci_timeout_state"
+  export OCI_TEST_DB_METRICS_CALLS_FILE="$TMPDIR_TEST/db_metrics_calls.jsonl"
   rm -f "$OCI_TEST_THROTTLE_STATE_FILE"
   rm -f "$OCI_TEST_TIMEOUT_STATE_FILE"
 
@@ -417,6 +418,8 @@ JSON
 fi
 
 if [[ "$args" == db\ system\ list* ]]; then
+  edition_json="${OCI_TEST_DB_SYSTEM_LIST_EDITION_JSON:-\"ENTERPRISE_EDITION_HIGH_PERFORMANCE\"}"
+  license_json="${OCI_TEST_DB_SYSTEM_LIST_LICENSE_JSON:-\"LICENSE_INCLUDED\"}"
   if [[ "${OCI_TEST_DB_LEGACY:-false}" == "true" ]]; then
     compute_fields="\"cpu-core-count\": ${OCI_TEST_DB_CPU_CORE_COUNT:-2}"
   else
@@ -428,6 +431,8 @@ if [[ "$args" == db\ system\ list* ]]; then
     {
       "id": "ocid1.dbsystem.oc1..s1",
       "shape": "VM.Standard.E5.Flex",
+      "database-edition": ${edition_json},
+      "license-model": ${license_json},
       ${compute_fields},
       "memory-size-in-gbs": ${OCI_TEST_DB_SYSTEM_LIST_MEMORY:-128},
       "data-storage-size-in-gbs": 1024,
@@ -441,11 +446,18 @@ JSON
 fi
 
 if [[ "$args" == db\ system\ get* ]]; then
-  cat <<'JSON'
+  edition_json="${OCI_TEST_DB_SYSTEM_GET_EDITION_JSON:-\"ENTERPRISE_EDITION_HIGH_PERFORMANCE\"}"
+  license_json="${OCI_TEST_DB_SYSTEM_GET_LICENSE_JSON:-\"LICENSE_INCLUDED\"}"
+  license_fields="\"database-edition\": ${edition_json}, \"license-model\": ${license_json},"
+  if [[ "${OCI_TEST_DB_SYSTEM_GET_OMIT_LICENSE:-false}" == "true" ]]; then
+    license_fields=""
+  fi
+  cat <<JSON
 {
   "data": {
     "id": "ocid1.dbsystem.oc1..s1",
     "shape": "VM.Standard.E5.Flex",
+    ${license_fields}
     "compute-model": "ECPU",
     "compute-count": 8,
     "memory-size-in-gbs": 64,
@@ -455,6 +467,125 @@ if [[ "$args" == db\ system\ get* ]]; then
   }
 }
 JSON
+  exit 0
+fi
+
+if [[ "$args" == monitoring\ metric-data\ summarize-metrics-data* ]]; then
+  metrics_start=""
+  metrics_end=""
+  metrics_query=""
+  metrics_resolution=""
+  metrics_namespace=""
+  metrics_compartment=""
+  metrics_region=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --start-time) metrics_start="$2"; shift ;;
+      --end-time) metrics_end="$2"; shift ;;
+      --query-text) metrics_query="$2"; shift ;;
+      --resolution) metrics_resolution="$2"; shift ;;
+      --namespace) metrics_namespace="$2"; shift ;;
+      --compartment-id) metrics_compartment="$2"; shift ;;
+      --region) metrics_region="$2"; shift ;;
+    esac
+    shift
+  done
+  case "$metrics_query" in
+    'MemoryUtilization[1h].groupBy(resourceId).mean()')
+      expected_namespace="oci_database_cluster"; expected_resolution="1h"
+      metrics_mode="${OCI_TEST_DB_MEMORY_METRICS_MODE:-normal}"
+      ;;
+    'CpuUtilization[1h].groupBy(resourceId).mean()')
+      expected_namespace="oci_database_cluster"; expected_resolution="1h"
+      metrics_mode="${OCI_TEST_DB_CPU_METRICS_MODE:-${OCI_TEST_DB_EXTENDED_METRICS_MODE:-normal}}"
+      ;;
+    'ASMDiskgroupUtilization[10m].groupBy(resourceId,diskgroupName).mean()')
+      expected_namespace="oci_database_cluster"; expected_resolution="10m"
+      metrics_mode="${OCI_TEST_DB_ASM_METRICS_MODE:-${OCI_TEST_DB_EXTENDED_METRICS_MODE:-normal}}"
+      ;;
+    'StorageUsed[1h].mean()')
+      expected_namespace="oci_database"; expected_resolution="1h"
+      metrics_mode="${OCI_TEST_DB_STORAGE_USED_METRICS_MODE:-${OCI_TEST_DB_EXTENDED_METRICS_MODE:-normal}}"
+      ;;
+    'StorageAllocated[1h].mean()'|'StorageUtilization[1h].mean()')
+      expected_namespace="oci_database"; expected_resolution="1h"
+      metrics_mode="${OCI_TEST_DB_EXTENDED_METRICS_MODE:-normal}"
+      ;;
+    *) echo "Unexpected DB metrics query: $args" >&2; exit 1 ;;
+  esac
+  if [[ "$metrics_namespace" != "$expected_namespace" || "$metrics_resolution" != "$expected_resolution" || "$metrics_compartment" != "ocid1.compartment.oc1..child" || "$metrics_region" != "eu-frankfurt-1" ]]; then
+    echo "Unexpected DB metrics query: $args" >&2
+    exit 1
+  fi
+  if ! "$REAL_JQ" -ne --arg start "$metrics_start" --arg end "$metrics_end" '
+    ($start | fromdateiso8601) as $start_time
+    | ($end | fromdateiso8601) as $end_time
+    | $end_time - $start_time == 86400 and $end_time <= now and $end_time > now - 300
+  ' >/dev/null; then
+    echo "DB metrics must use the previous 24 hours in UTC" >&2
+    exit 1
+  fi
+  "$REAL_JQ" -nc --arg start "$metrics_start" --arg end "$metrics_end" --arg query "$metrics_query" --arg namespace "$metrics_namespace" '{startTime: $start, endTime: $end, query: $query, namespace: $namespace}' >> "$OCI_TEST_DB_METRICS_CALLS_FILE"
+  case "$metrics_mode" in
+    denied)
+      echo 'ServiceError: NotAuthorizedOrNotFound' >&2
+      exit 1
+      ;;
+    empty)
+      echo '{"data":[]}'
+      exit 0
+      ;;
+    invalid)
+      echo 'invalid metric response'
+      exit 0
+      ;;
+  esac
+  metrics_latest="$("$REAL_JQ" -nr --arg end "$metrics_end" '($end | fromdateiso8601) - 3600 | todateiso8601')"
+  metrics_older="$("$REAL_JQ" -nr --arg end "$metrics_end" '($end | fromdateiso8601) - 7200 | todateiso8601')"
+  case "$metrics_query" in
+    'MemoryUtilization[1h].groupBy(resourceId).mean()')
+      if [[ "$metrics_mode" == "zero" ]]; then
+        echo '{"data":[{"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1"},"aggregated-datapoints":[{"value":0},{"value":null}]}]}'
+      else
+        echo '{"data":[{"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1"},"aggregated-datapoints":[{"value":20},{"value":40},{"value":null},{}]},{"dimensions":{"resourceId":"ocid1.dbsystem.oc1..unrelated"},"aggregated-datapoints":[{"value":90}]}]}'
+      fi
+      ;;
+    'CpuUtilization[1h].groupBy(resourceId).mean()')
+      if [[ "$metrics_mode" == "zero" ]]; then
+        echo '{"data":[{"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1"},"aggregated-datapoints":[{"value":0},{"value":null}]}]}'
+      else
+        echo '{"data":[{"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1"},"aggregated-datapoints":[{"value":10},{"value":30},{"value":null},{"value":"80"},{}]},{"dimensions":{"resourceId":"ocid1.dbsystem.oc1..unrelated"},"aggregated-datapoints":[{"value":90}]}]}'
+      fi
+      ;;
+    'ASMDiskgroupUtilization[10m].groupBy(resourceId,diskgroupName).mean()')
+      data_value=40; reco_value=25
+      if [[ "$metrics_mode" == "zero" ]]; then data_value=0; reco_value=0; fi
+      cat <<JSON
+{"data":[
+  {"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1","diskgroupName":"DATA"},"aggregated-datapoints":[{"timestamp":"$metrics_latest","value":$data_value},{"timestamp":"$metrics_older","value":10},{"timestamp":"$metrics_end","value":null}]},
+  {"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1","diskgroupName":"RECO"},"aggregated-datapoints":[{"timestamp":"$metrics_latest","value":$reco_value},{"timestamp":"$metrics_older","value":15},{"timestamp":"$metrics_end","value":null}]},
+  {"dimensions":{"resourceId":"ocid1.dbsystem.oc1..unrelated","diskgroupName":"DATA"},"aggregated-datapoints":[{"timestamp":"$metrics_end","value":99}]}
+]}
+JSON
+      ;;
+    *)
+      storage_value=60
+      if [[ "$metrics_query" == 'StorageAllocated[1h].mean()' ]]; then storage_value=100; fi
+      if [[ "$metrics_mode" == "zero" ]]; then storage_value=0; fi
+      storage_dimensions='"resourceId":"ocid1.dbsystem.oc1..s1","resourceId_database":"ocid1.database.oc1..d1","hostname":"node1"'
+      if [[ "$metrics_mode" == "database-resource-id" ]]; then
+        storage_dimensions='"resourceId":"ocid1.database.oc1..d1","hostname":"node1"'
+      fi
+      cat <<JSON
+{"data":[
+  {"dimensions":{$storage_dimensions},"aggregated-datapoints":[{"timestamp":"$metrics_latest","value":$storage_value},{"timestamp":"$metrics_older","value":20},{"timestamp":"$metrics_end","value":null}]},
+  {"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1","resourceId_database":"ocid1.database.oc1..d1","hostname":"node2"},"aggregated-datapoints":[{"timestamp":"$metrics_older","value":50}]},
+  {"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1","resourceId_database":"ocid1.database.oc1..d1","resourceId_pdb":"ocid1.pluggabledatabase.oc1..pdb1"},"aggregated-datapoints":[{"timestamp":"$metrics_end","value":999}]},
+  {"dimensions":{"resourceId":"ocid1.dbsystem.oc1..s1","resourceId_database":"ocid1.database.oc1..unrelated"},"aggregated-datapoints":[{"timestamp":"$metrics_end","value":888}]}
+]}
+JSON
+      ;;
+  esac
   exit 0
 fi
 
@@ -875,12 +1006,15 @@ EOF
   run "$SCRIPT_PATH" base-database
   [ "$status" -eq 0 ]
   [ -f report/base-database/base_databases.csv ]
+  local memory_start memory_end
+  memory_start="$(jq -r '.[0].memoryMetricsStartTime' report/base-database/base_databases.json)"
+  memory_end="$(jq -r '.[0].memoryMetricsEndTime' report/base-database/base_databases.json)"
 
   run cat report/base-database/base_databases.csv
   [ "$status" -eq 0 ]
   local normalized_output="${output//\"/}"
-  [[ "$normalized_output" == *"compartment-id,compartment-path,region,db-name,db-unique-name,db-workload,db-version,db-system-id,db-system-shape,compute-model,ecpu-count,ocpu-count,memory-size-in-gbs,data-storage-size-in-gbs,reco-storage-size-in-gb,node-count,db-home-id,vm-cluster-id,cdb-name,pdb-name,lifecycle-state,lifecycle-details,character-set,ncharacter-set,is-cdb,kms-key-id,kms-key-version-id,key-store-id,key-store-wallet-name,vault-id,database-software-image-id,sid-prefix,auto-backup-enabled,backup-recovery-window-in-days,backup-destination-type,auto-full-backup-day,last-backup-timestamp,last-failed-backup-timestamp,last-backup-duration-in-seconds,freeform-tag-count,defined-tag-namespace-count,time-created,id"* ]]
-  [[ "$output" == *"\"ocid1.compartment.oc1..child\",\"child\",\"eu-frankfurt-1\",\"APPDB\",\"APPDB_iad1\",\"OLTP\",\"19c\",\"ocid1.dbsystem.oc1..s1\",\"VM.Standard.E5.Flex\",\"ECPU\",8,\"\",128,1024,256,1,\"ocid1.dbhome.oc1..h1\",\"\",\"CDB1\",\"PDB1\",\"AVAILABLE\",\"Primary DB\",\"AL32UTF8\",\"AL16UTF16\",true,\"ocid1.key.oc1..kdb1\",\"ocid1.keyversion.oc1..kv1\",\"ocid1.keystore.oc1..ks1\",\"WLT1\",\"ocid1.vault.oc1..v1\",\"ocid1.dbsoftwareimage.oc1..img1\",\"DB\",true,7,\"NFS\",\"SUNDAY\",\"2026-01-08T00:00:00+00:00\",\"2026-01-09T00:00:00+00:00\",1234,1,1,\"2026-01-07T00:00:00+00:00\",\"ocid1.database.oc1..d1\""* ]]
+  [[ "$normalized_output" == *"compartment-id,compartment-path,region,db-name,db-unique-name,db-workload,db-version,database-edition,license-model,db-system-id,db-system-shape,compute-model,ecpu-count,ocpu-count,memory-size-in-gbs,avg-memory-utilization-percent,memory-metrics-start-time,memory-metrics-end-time,avg-cpu-utilization-percent,data-storage-size-in-gbs,reco-storage-size-in-gb,storage-used-in-gbs,storage-allocated-in-gbs,storage-utilization-percent,data-storage-utilization-percent,reco-storage-utilization-percent,node-count,db-home-id,vm-cluster-id,cdb-name,pdb-name,lifecycle-state,lifecycle-details,character-set,ncharacter-set,is-cdb,kms-key-id,kms-key-version-id,key-store-id,key-store-wallet-name,vault-id,database-software-image-id,sid-prefix,auto-backup-enabled,backup-recovery-window-in-days,backup-destination-type,auto-full-backup-day,last-backup-timestamp,last-failed-backup-timestamp,last-backup-duration-in-seconds,freeform-tag-count,defined-tag-namespace-count,time-created,id"* ]]
+  [[ "$output" == *"\"ocid1.compartment.oc1..child\",\"child\",\"eu-frankfurt-1\",\"APPDB\",\"APPDB_iad1\",\"OLTP\",\"19c\",\"ENTERPRISE_EDITION_HIGH_PERFORMANCE\",\"LICENSE_INCLUDED\",\"ocid1.dbsystem.oc1..s1\",\"VM.Standard.E5.Flex\",\"ECPU\",8,\"\",128,30,\"${memory_start}\",\"${memory_end}\",20,1024,256,60,100,60,40,25,1,\"ocid1.dbhome.oc1..h1\",\"\",\"CDB1\",\"PDB1\",\"AVAILABLE\",\"Primary DB\",\"AL32UTF8\",\"AL16UTF16\",true,\"ocid1.key.oc1..kdb1\",\"ocid1.keyversion.oc1..kv1\",\"ocid1.keystore.oc1..ks1\",\"WLT1\",\"ocid1.vault.oc1..v1\",\"ocid1.dbsoftwareimage.oc1..img1\",\"DB\",true,7,\"NFS\",\"SUNDAY\",\"2026-01-08T00:00:00+00:00\",\"2026-01-09T00:00:00+00:00\",1234,1,1,\"2026-01-07T00:00:00+00:00\",\"ocid1.database.oc1..d1\""* ]]
 }
 
 @test "base-database keeps ECPU and OCPU counts mutually exclusive" {
@@ -895,7 +1029,336 @@ EOF
 
   run cat report/base-database/base_databases.csv
   [ "$status" -eq 0 ]
-  [[ "$output" == *"\"OCPU\",\"\",4,128,1024,256,1"* ]]
+  [[ "$output" == *"\"OCPU\",\"\",4,128,30,"* ]]
+}
+
+@test "base-database preserves all license editions and BYOL in regional and merged reports" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_SYSTEM_LIST_LICENSE_JSON='"BRING_YOUR_OWN_LICENSE"'
+
+  for edition in STANDARD_EDITION ENTERPRISE_EDITION ENTERPRISE_EDITION_HIGH_PERFORMANCE ENTERPRISE_EDITION_EXTREME_PERFORMANCE; do
+    export OCI_TEST_DB_SYSTEM_LIST_EDITION_JSON="\"$edition\""
+
+    run "$SCRIPT_PATH" base-database
+    [ "$status" -eq 0 ]
+
+    for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+      run jq -e --arg edition "$edition" '
+        length > 0 and all(.[]; .databaseEdition == $edition and .licenseModel == "BRING_YOUR_OWN_LICENSE")
+      ' "$report_dir/base_databases.json"
+      [ "$status" -eq 0 ]
+
+      run cat "$report_dir/base_databases.csv"
+      [ "$status" -eq 0 ]
+      [[ "$output" == *"\"19c\",\"$edition\",\"BRING_YOUR_OWN_LICENSE\",\"ocid1.dbsystem.oc1..s1\""* ]]
+    done
+  done
+}
+
+@test "base-database leaves missing edition and license model blank" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_SYSTEM_LIST_EDITION_JSON="null"
+  export OCI_TEST_DB_SYSTEM_LIST_LICENSE_JSON="null"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e 'length > 0 and all(.[]; .databaseEdition == "" and .licenseModel == "")' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+  run cat report/base-database/base_databases.csv
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'"19c","","","ocid1.dbsystem.oc1..s1"'* ]]
+}
+
+@test "base-database gets edition and license model from full DB system details" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_SYSTEM_LIST_MEMORY="null"
+  export OCI_TEST_DB_SYSTEM_LIST_EDITION_JSON="null"
+  export OCI_TEST_DB_SYSTEM_LIST_LICENSE_JSON="null"
+  export OCI_TEST_DB_SYSTEM_GET_EDITION_JSON='"STANDARD_EDITION"'
+  export OCI_TEST_DB_SYSTEM_GET_LICENSE_JSON='"BRING_YOUR_OWN_LICENSE"'
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e '
+    length > 0 and all(.[];
+      .databaseEdition == "STANDARD_EDITION"
+      and .licenseModel == "BRING_YOUR_OWN_LICENSE"
+      and .memorySizeInGbs == 64)
+  ' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+}
+
+@test "base-database retains summary license when memory fallback omits license fields" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_SYSTEM_LIST_MEMORY="null"
+  export OCI_TEST_DB_SYSTEM_LIST_EDITION_JSON='"ENTERPRISE_EDITION"'
+  export OCI_TEST_DB_SYSTEM_LIST_LICENSE_JSON='"BRING_YOUR_OWN_LICENSE"'
+  export OCI_TEST_DB_SYSTEM_GET_OMIT_LICENSE="true"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e '
+    length > 0 and all(.[];
+      .databaseEdition == "ENTERPRISE_EDITION"
+      and .licenseModel == "BRING_YOUR_OWN_LICENSE"
+      and .memorySizeInGbs == 64)
+  ' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+}
+
+@test "base-database averages memory telemetry over an explicit 24 hour window" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e 'length > 0 and all(.[]; .avgMemoryUtilizationPercent == 30)' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+
+  run jq -se '[.[] | select(.query == "MemoryUtilization[1h].groupBy(resourceId).mean()")] | length == 1' "$OCI_TEST_DB_METRICS_CALLS_FILE"
+  [ "$status" -eq 0 ]
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e --slurpfile calls "$OCI_TEST_DB_METRICS_CALLS_FILE" '
+      ($calls | map(select(.query == "MemoryUtilization[1h].groupBy(resourceId).mean()")) | .[0]) as $memory_call
+      | length > 0 and all(.[];
+        .avgMemoryUtilizationPercent == 30
+        and .memoryMetricsStartTime == $memory_call.startTime
+        and .memoryMetricsEndTime == $memory_call.endTime)
+    ' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+
+    run cat "$report_dir/base_databases.csv"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"avg-memory-utilization-percent","memory-metrics-start-time","memory-metrics-end-time"'* ]]
+    [[ "$output" == *',128,30,'* ]]
+  done
+}
+
+@test "base-database exports CPU and latest database and diskgroup storage telemetry" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e '
+      length > 0 and all(.[];
+        .avgCpuUtilizationPercent == 20
+        and .storageUsedInGbs == 60
+        and .storageAllocatedInGbs == 100
+        and .storageUtilizationPercent == 60
+        and .dataStorageUtilizationPercent == 40
+        and .recoStorageUtilizationPercent == 25)
+    ' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+
+    run cat "$report_dir/base_databases.csv"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *'"memory-metrics-end-time","avg-cpu-utilization-percent","data-storage-size-in-gbs"'* ]]
+    [[ "$output" == *'"reco-storage-size-in-gb","storage-used-in-gbs","storage-allocated-in-gbs","storage-utilization-percent","data-storage-utilization-percent","reco-storage-utilization-percent","node-count"'* ]]
+    [[ "$output" == *',20,1024,256,60,100,60,40,25,1,'* ]]
+  done
+
+  run jq -se '
+    length == 6
+    and ([.[] | .query] | unique | length) == 6
+    and ([.[] | [.startTime, .endTime]] | unique | length) == 1
+  ' "$OCI_TEST_DB_METRICS_CALLS_FILE"
+  [ "$status" -eq 0 ]
+}
+
+@test "base-database preserves zero CPU and storage telemetry values" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_EXTENDED_METRICS_MODE="zero"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e '
+      length > 0 and all(.[];
+        .avgMemoryUtilizationPercent == 30
+        and .avgCpuUtilizationPercent == 0
+        and .storageUsedInGbs == 0
+        and .storageAllocatedInGbs == 0
+        and .storageUtilizationPercent == 0
+        and .dataStorageUtilizationPercent == 0
+        and .recoStorageUtilizationPercent == 0)
+    ' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+    run cat "$report_dir/base_databases.csv"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *',0,1024,256,0,0,0,0,0,1,'* ]]
+  done
+}
+
+@test "base-database leaves absent CPU and storage telemetry blank" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_EXTENDED_METRICS_MODE="empty"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e '
+      length > 0 and all(.[];
+        .avgMemoryUtilizationPercent == 30
+        and .avgCpuUtilizationPercent == ""
+        and .storageUsedInGbs == ""
+        and .storageAllocatedInGbs == ""
+        and .storageUtilizationPercent == ""
+        and .dataStorageUtilizationPercent == ""
+        and .recoStorageUtilizationPercent == "")
+    ' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+    run cat "$report_dir/base_databases.csv"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *',"",1024,256,"","","","","",1,'* ]]
+  done
+}
+
+@test "base-database tolerates denied and malformed CPU and storage responses" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+
+  for metrics_mode in denied invalid; do
+    export OCI_TEST_DB_EXTENDED_METRICS_MODE="$metrics_mode"
+    run "$SCRIPT_PATH" base-database
+    [ "$status" -eq 0 ]
+
+    for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+      run jq -e '
+        length > 0 and all(.[];
+          .avgMemoryUtilizationPercent == 30
+          and .licenseModel == "LICENSE_INCLUDED"
+          and .avgCpuUtilizationPercent == ""
+          and .storageUsedInGbs == ""
+          and .storageAllocatedInGbs == ""
+          and .storageUtilizationPercent == ""
+          and .dataStorageUtilizationPercent == ""
+          and .recoStorageUtilizationPercent == "")
+      ' "$report_dir/base_databases.json"
+      [ "$status" -eq 0 ]
+    done
+  done
+}
+
+@test "base-database retains other telemetry when one storage request fails" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_STORAGE_USED_METRICS_MODE="denied"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e '
+    length > 0 and all(.[];
+      .avgMemoryUtilizationPercent == 30
+      and .avgCpuUtilizationPercent == 20
+      and .storageUsedInGbs == ""
+      and .storageAllocatedInGbs == 100
+      and .storageUtilizationPercent == 60
+      and .dataStorageUtilizationPercent == 40
+      and .recoStorageUtilizationPercent == 25)
+  ' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+}
+
+@test "base-database matches database storage resourceId when database dimension is absent" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_EXTENDED_METRICS_MODE="database-resource-id"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  run jq -e '
+    length > 0 and all(.[];
+      .storageUsedInGbs == 60
+      and .storageAllocatedInGbs == 100
+      and .storageUtilizationPercent == 60)
+  ' report/base-database/base_databases.json
+  [ "$status" -eq 0 ]
+}
+
+@test "base-database preserves zero memory telemetry values" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_MEMORY_METRICS_MODE="zero"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e 'length > 0 and all(.[]; .avgMemoryUtilizationPercent == 0)' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+    run cat "$report_dir/base_databases.csv"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *',128,0,'* ]]
+  done
+}
+
+@test "base-database leaves average blank when memory telemetry has no datapoints" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_MEMORY_METRICS_MODE="empty"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e 'length > 0 and all(.[]; .avgMemoryUtilizationPercent == "")' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+    run cat "$report_dir/base_databases.csv"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *',128,"",'* ]]
+  done
+}
+
+@test "base-database succeeds with blank average when memory telemetry is denied" {
+  cd "$WORKDIR"
+  export TENANCY_OCID="ocid1.tenancy.oc1..tenancy"
+  export REGIONS="eu-frankfurt-1"
+  export OCI_TEST_DB_MEMORY_METRICS_MODE="denied"
+
+  run "$SCRIPT_PATH" base-database
+  [ "$status" -eq 0 ]
+  [[ "$output" == *'Memory telemetry unavailable for compartment ocid1.compartment.oc1..child in eu-frankfurt-1; leaving average blank'* ]]
+
+  for report_dir in report/base-database report/base-database/regions/eu-frankfurt-1; do
+    run jq -e '
+      length > 0 and all(.[];
+        .avgMemoryUtilizationPercent == ""
+        and .databaseEdition == "ENTERPRISE_EDITION_HIGH_PERFORMANCE"
+        and .licenseModel == "LICENSE_INCLUDED")
+    ' "$report_dir/base_databases.json"
+    [ "$status" -eq 0 ]
+    [ -f "$report_dir/base_databases.csv" ]
+  done
 }
 
 @test "base-database maps legacy cpu-core-count to OCPU only" {
@@ -1074,6 +1537,7 @@ EOF
         *"oci_cli db db-home list"* ) ;;
         *"oci_cli db system get"* ) ;;
         *"oci_cli db system list"* ) ;;
+        *"oci_cli monitoring metric-data summarize-metrics-data"* ) ;;
         *"oci_cli os bucket get"* ) ;;
         *"oci_cli os bucket list"* ) ;;
         *"oci_cli os ns get"* ) ;;

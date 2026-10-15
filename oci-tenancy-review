@@ -1348,6 +1348,11 @@ build_base_database_compartment_region() {
   local db_system_details_file
   local db_system_ids_file
   local db_systems_file
+  local db_metrics_file
+  local metric_response_file
+  local metric_name metric_namespace metric_query metric_resolution
+  local metrics_start_time
+  local metrics_end_time
   local db_system_id
   local rc
   cpath="$(get_compartment_path "$cid")"
@@ -1357,25 +1362,27 @@ build_base_database_compartment_region() {
   db_system_details_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-system-details.XXXXXX")"
   db_system_ids_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-system-ids.XXXXXX")"
   db_systems_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-systems.XXXXXX")"
+  db_metrics_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-metrics.XXXXXX")"
+  metric_response_file="$(mktemp "${TMPDIR:-/tmp}/oci-review-db-metric-response.XXXXXX")"
   if oci_cli db system list --compartment-id "$cid" --region "$region" --all --output json > "$db_systems_file"; then
     :
   else
     rc=$?
-    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file" "$db_metrics_file" "$metric_response_file"
     return "$rc"
   fi
   if oci_cli db db-home list --compartment-id "$cid" --region "$region" --all --output json > "$db_homes_file"; then
     :
   else
     rc=$?
-    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file" "$db_metrics_file" "$metric_response_file"
     return "$rc"
   fi
   if oci_cli db database list --compartment-id "$cid" --region "$region" --output json > "$databases_file"; then
     :
   else
     rc=$?
-    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file" "$db_metrics_file" "$metric_response_file"
     return "$rc"
   fi
   if jq -r --slurpfile dbSystems "$db_systems_file" '
@@ -1390,7 +1397,7 @@ build_base_database_compartment_region() {
     :
   else
     rc=$?
-    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+    rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file" "$db_metrics_file" "$metric_response_file"
     return "$rc"
   fi
   while IFS= read -r db_system_id; do
@@ -1400,15 +1407,93 @@ build_base_database_compartment_region() {
       :
     else
       rc=$?
-      rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+      rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file" "$db_metrics_file" "$metric_response_file"
       return "$rc"
     fi
   done < "$db_system_ids_file"
+  read -r metrics_start_time metrics_end_time < <(
+    jq -nr 'now | floor as $end | "\(($end - 86400) | todateiso8601) \($end | todateiso8601)"'
+  )
+  for metric_name in MemoryUtilization CpuUtilization ASMDiskgroupUtilization StorageUsed StorageAllocated StorageUtilization; do
+    metric_namespace="oci_database_cluster"
+    metric_resolution="1h"
+    case "$metric_name" in
+      MemoryUtilization|CpuUtilization)
+        metric_query="${metric_name}[1h].groupBy(resourceId).mean()"
+        ;;
+      ASMDiskgroupUtilization)
+        metric_resolution="10m"
+        metric_query='ASMDiskgroupUtilization[10m].groupBy(resourceId,diskgroupName).mean()'
+        ;;
+      Storage*)
+        metric_namespace="oci_database"
+        metric_query="${metric_name}[1h].mean()"
+        ;;
+    esac
+    if oci_cli monitoring metric-data summarize-metrics-data \
+      --compartment-id "$cid" --region "$region" --namespace "$metric_namespace" \
+      --query-text "$metric_query" --resolution "$metric_resolution" \
+      --start-time "$metrics_start_time" --end-time "$metrics_end_time" \
+      --output json > "$metric_response_file" \
+      && jq -ce --arg metric "$metric_name" '
+        select(.data | type == "array") | {metric: $metric, data: .data}
+      ' "$metric_response_file" >> "$db_metrics_file"; then
+      :
+    else
+      if [[ "$metric_name" == "MemoryUtilization" ]]; then
+        warn "Memory telemetry unavailable for compartment ${cid} in ${region}; leaving average blank"
+      else
+        warn "${metric_name} telemetry unavailable for compartment ${cid} in ${region}; leaving metric blank"
+      fi
+      printf '{"metric":"%s","data":[]}\n' "$metric_name" >> "$db_metrics_file"
+    fi
+  done
   if jq -c --arg region "$region" --arg cid "$cid" --rawfile cpath "$cpath_file" \
+    --arg memoryMetricsStartTime "$metrics_start_time" \
+    --arg memoryMetricsEndTime "$metrics_end_time" \
+    --slurpfile dbMetrics "$db_metrics_file" \
     --slurpfile dbHomes "$db_homes_file" \
     --slurpfile dbSystemDetails "$db_system_details_file" \
     --slurpfile dbSystems "$db_systems_file" '
-        .data[]?
+        def metric_streams($name):
+          ($dbMetrics | map(select(.metric == $name)) | .[0].data) // [];
+        def numeric_datapoints:
+          .[] | ."aggregated-datapoints"[]? | select(.value | type == "number");
+        def system_averages($name):
+          metric_streams($name)
+          | map(select((.dimensions.resourceId // "") != ""))
+          | group_by(.dimensions.resourceId)
+          | map({
+              key: .[0].dimensions.resourceId,
+              value: ([numeric_datapoints | .value]
+                | if length > 0 then add / length else "" end)
+            })
+          | from_entries;
+        def latest_value:
+          [numeric_datapoints | select((.timestamp // "") != "")]
+          | sort_by(.timestamp)
+          | (.[-1].value // "");
+        def database_latest($name):
+          metric_streams($name)
+          | map(select((.dimensions.resourceId_pdb // "") == "")
+              | . + {databaseId: (.dimensions.resourceId_database // .dimensions.resourceId // "")})
+          | map(select(.databaseId != ""))
+          | group_by(.databaseId)
+          | map({key: .[0].databaseId, value: latest_value})
+          | from_entries;
+        def diskgroup_latest:
+          metric_streams("ASMDiskgroupUtilization")
+          | map(select((.dimensions.resourceId // "") != "" and (.dimensions.diskgroupName // "") != ""))
+          | group_by([.dimensions.resourceId, .dimensions.diskgroupName])
+          | map({key: ([.[0].dimensions.resourceId, .[0].dimensions.diskgroupName] | tojson), value: latest_value})
+          | from_entries;
+        system_averages("MemoryUtilization") as $memoryAverages
+        | system_averages("CpuUtilization") as $cpuAverages
+        | database_latest("StorageUsed") as $storageUsed
+        | database_latest("StorageAllocated") as $storageAllocated
+        | database_latest("StorageUtilization") as $storageUtilization
+        | diskgroup_latest as $diskgroupUtilization
+        | .data[]?
         | (."db-backup-config" // .dbBackupConfig // {}) as $b
         | (."db-home-id" // .dbHomeId // "") as $dbHomeId
         | (."db-system-id" // .dbSystemId // "") as $dbSystemId
@@ -1425,6 +1510,8 @@ build_base_database_compartment_region() {
           dbUniqueName: (."db-unique-name" // .dbUniqueName // ""),
           dbWorkload: (."db-workload" // .dbWorkload // ""),
           dbVersion: ($h."db-version" // $h.dbVersion // ."db-version" // .dbVersion // ""),
+          databaseEdition: ($systemDetails."database-edition" // $systemDetails.databaseEdition // $systemSummary."database-edition" // $systemSummary.databaseEdition // ""),
+          licenseModel: ($systemDetails."license-model" // $systemDetails.licenseModel // $systemSummary."license-model" // $systemSummary.licenseModel // ""),
           dbSystemId: $dbSystemId,
           dbSystemShape: ($s.shape // ""),
           computeModel: $computeModel,
@@ -1436,8 +1523,17 @@ build_base_database_compartment_region() {
             end
           ),
           memorySizeInGbs: ($s."memory-size-in-gbs" // $s.memorySizeInGbs // ""),
+          avgMemoryUtilizationPercent: ($memoryAverages[$dbSystemId] // ""),
+          memoryMetricsStartTime: $memoryMetricsStartTime,
+          memoryMetricsEndTime: $memoryMetricsEndTime,
+          avgCpuUtilizationPercent: ($cpuAverages[$dbSystemId] // ""),
           dataStorageSizeInGbs: ($s."data-storage-size-in-gbs" // $s.dataStorageSizeInGbs // ""),
           recoStorageSizeInGb: ($s."reco-storage-size-in-gb" // $s.recoStorageSizeInGb // ""),
+          storageUsedInGbs: ($storageUsed[.id // ""] // ""),
+          storageAllocatedInGbs: ($storageAllocated[.id // ""] // ""),
+          storageUtilizationPercent: ($storageUtilization[.id // ""] // ""),
+          dataStorageUtilizationPercent: ($diskgroupUtilization[[$dbSystemId, "DATA"] | tojson] // ""),
+          recoStorageUtilizationPercent: ($diskgroupUtilization[[$dbSystemId, "RECO"] | tojson] // ""),
           nodeCount: ($s."node-count" // $s.nodeCount // ""),
           dbHomeId: $dbHomeId,
           vmClusterId: (."vm-cluster-id" // .vmClusterId // ""),
@@ -1472,7 +1568,7 @@ build_base_database_compartment_region() {
   else
     rc=$?
   fi
-  rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file"
+  rm -f "$cpath_file" "$databases_file" "$db_homes_file" "$db_system_details_file" "$db_system_ids_file" "$db_systems_file" "$db_metrics_file" "$metric_response_file"
   return "$rc"
 }
 
@@ -1511,8 +1607,8 @@ merge_base_database_region() {
   concat_compartment_parts "${out_dir}/compartments" "*.jsonl" "$jsonl_file"
   jq -s 'sort_by(.region, .compartmentPath, .dbName)' "$jsonl_file" > "$json_file"
   jq -r '
-    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-system-shape","compute-model","ecpu-count","ocpu-count","memory-size-in-gbs","data-storage-size-in-gbs","reco-storage-size-in-gb","node-count","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
-    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbSystemShape, .computeModel, .ecpuCount, .ocpuCount, .memorySizeInGbs, .dataStorageSizeInGbs, .recoStorageSizeInGb, .nodeCount, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
+    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","database-edition","license-model","db-system-id","db-system-shape","compute-model","ecpu-count","ocpu-count","memory-size-in-gbs","avg-memory-utilization-percent","memory-metrics-start-time","memory-metrics-end-time","avg-cpu-utilization-percent","data-storage-size-in-gbs","reco-storage-size-in-gb","storage-used-in-gbs","storage-allocated-in-gbs","storage-utilization-percent","data-storage-utilization-percent","reco-storage-utilization-percent","node-count","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .databaseEdition, .licenseModel, .dbSystemId, .dbSystemShape, .computeModel, .ecpuCount, .ocpuCount, .memorySizeInGbs, .avgMemoryUtilizationPercent, .memoryMetricsStartTime, .memoryMetricsEndTime, .avgCpuUtilizationPercent, .dataStorageSizeInGbs, .recoStorageSizeInGb, .storageUsedInGbs, .storageAllocatedInGbs, .storageUtilizationPercent, .dataStorageUtilizationPercent, .recoStorageUtilizationPercent, .nodeCount, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
   ' "$json_file" > "$csv_file"
   verbose "wrote region artifact dir '${out_dir}'"
   local total
@@ -1559,8 +1655,8 @@ merge_base_database_regions() {
   verbose "wrote 'report/base-database/base_database_target_compartments.csv'"
 
   jq -r '
-    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","db-system-id","db-system-shape","compute-model","ecpu-count","ocpu-count","memory-size-in-gbs","data-storage-size-in-gbs","reco-storage-size-in-gb","node-count","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
-    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .dbSystemId, .dbSystemShape, .computeModel, .ecpuCount, .ocpuCount, .memorySizeInGbs, .dataStorageSizeInGbs, .recoStorageSizeInGb, .nodeCount, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
+    ["compartment-id","compartment-path","region","db-name","db-unique-name","db-workload","db-version","database-edition","license-model","db-system-id","db-system-shape","compute-model","ecpu-count","ocpu-count","memory-size-in-gbs","avg-memory-utilization-percent","memory-metrics-start-time","memory-metrics-end-time","avg-cpu-utilization-percent","data-storage-size-in-gbs","reco-storage-size-in-gb","storage-used-in-gbs","storage-allocated-in-gbs","storage-utilization-percent","data-storage-utilization-percent","reco-storage-utilization-percent","node-count","db-home-id","vm-cluster-id","cdb-name","pdb-name","lifecycle-state","lifecycle-details","character-set","ncharacter-set","is-cdb","kms-key-id","kms-key-version-id","key-store-id","key-store-wallet-name","vault-id","database-software-image-id","sid-prefix","auto-backup-enabled","backup-recovery-window-in-days","backup-destination-type","auto-full-backup-day","last-backup-timestamp","last-failed-backup-timestamp","last-backup-duration-in-seconds","freeform-tag-count","defined-tag-namespace-count","time-created","id"],
+    (.[] | [.compartmentId, .compartmentPath, .region, .dbName, .dbUniqueName, .dbWorkload, .dbVersion, .databaseEdition, .licenseModel, .dbSystemId, .dbSystemShape, .computeModel, .ecpuCount, .ocpuCount, .memorySizeInGbs, .avgMemoryUtilizationPercent, .memoryMetricsStartTime, .memoryMetricsEndTime, .avgCpuUtilizationPercent, .dataStorageSizeInGbs, .recoStorageSizeInGb, .storageUsedInGbs, .storageAllocatedInGbs, .storageUtilizationPercent, .dataStorageUtilizationPercent, .recoStorageUtilizationPercent, .nodeCount, .dbHomeId, .vmClusterId, .cdbName, .pdbName, .lifecycleState, .lifecycleDetails, .characterSet, .ncharacterSet, .isCdb, .kmsKeyId, .kmsKeyVersionId, .keyStoreId, .keyStoreWalletName, .vaultId, .databaseSoftwareImageId, .sidPrefix, .autoBackupEnabled, .backupRecoveryWindowInDays, .backupDestinationType, .autoFullBackupDay, .lastBackupTimestamp, .lastFailedBackupTimestamp, .lastBackupDurationInSeconds, .freeformTagCount, .definedTagNamespaceCount, .timeCreated, .id]) | @csv
   ' report/base-database/base_databases.json > report/base-database/base_databases.csv
   verbose "wrote 'report/base-database/base_databases.csv'"
   local total

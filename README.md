@@ -410,14 +410,25 @@ CSV header:
 - `db-unique-name`
 - `db-workload`
 - `db-version`
+- `database-edition` (`STANDARD_EDITION`, `ENTERPRISE_EDITION`, `ENTERPRISE_EDITION_HIGH_PERFORMANCE`, or `ENTERPRISE_EDITION_EXTREME_PERFORMANCE`; other OCI values are preserved)
+- `license-model` (`LICENSE_INCLUDED` or `BRING_YOUR_OWN_LICENSE`)
 - `db-system-id`
 - `db-system-shape`
 - `compute-model` (`ECPU`, `OCPU`, or empty for DB systems using legacy `cpu-core-count`)
 - `ecpu-count` (populated only when `compute-model=ECPU`)
 - `ocpu-count` (populated for OCPU and legacy `cpu-core-count` DB systems)
 - `memory-size-in-gbs`
+- `avg-memory-utilization-percent` (mean of available hourly `MemoryUtilization` averages over the preceding 24 hours, grouped by DB system across hosts)
+- `memory-metrics-start-time` (UTC start of the requested 24-hour window for all utilization and storage metrics)
+- `memory-metrics-end-time` (UTC end of the requested 24-hour window for all utilization and storage metrics)
+- `avg-cpu-utilization-percent` (mean of available hourly `CpuUtilization` averages over the same window, grouped by DB system across hosts)
 - `data-storage-size-in-gbs`
 - `reco-storage-size-in-gb`
+- `storage-used-in-gbs` (latest available hourly `StorageUsed` reading for this database, in GB)
+- `storage-allocated-in-gbs` (latest available hourly `StorageAllocated` reading for this database, in GB)
+- `storage-utilization-percent` (latest available hourly `StorageUtilization` reading for this database)
+- `data-storage-utilization-percent` (latest available 10-minute `ASMDiskgroupUtilization` average for this DB system's DATA disk group)
+- `reco-storage-utilization-percent` (latest available 10-minute `ASMDiskgroupUtilization` average for this DB system's RECO disk group)
 - `node-count`
 - `db-home-id`
 - `vm-cluster-id`
@@ -448,6 +459,14 @@ CSV header:
 - `id`
 
 DB version is joined by `db-home-id` from one paginated DB Home list per target compartment. Sizing is joined by `db-system-id` from one paginated DB system list; when that summary omits memory, the full DB system is fetched once to complete its sizing. Following Oracle's [Base Database compute model semantics](https://docs.oracle.com/en-us/iaas/tools/oci-cli/latest/oci_cli_docs/cmdref/db/system/update.html), `compute-count` is exported as either ECPUs or OCPUs according to `compute-model`; the older `cpu-core-count` representation is exported as OCPUs with an empty `compute-model`.
+
+Database edition and license model come from that same DB system inventory and are repeated for each database on the system. Missing values are exported as empty cells.
+
+Utilization and storage telemetry uses six read-only OCI Monitoring queries per target compartment across the `oci_database_cluster` and `oci_database` namespaces, all requesting the same preceding 24-hour UTC window. Queries are best effort and fail independently: a metric is empty when its query fails (for example, without permission to read metrics) or no numeric samples are available. A reported zero remains zero. The existing `memory-metrics-start-time` and `memory-metrics-end-time` columns record the requested window for all six metrics. These values describe a report snapshot; cached reports retain their original window.
+
+CPU and memory averages exclude missing samples and combine the available hourly averages across hosts on each DB system. Telemetry gaps can mean an average covers fewer hours. `memory-size-in-gbs` is provisioned capacity. The utilization column preserves Oracle's published `MemoryUtilization` values: the [Base Database metric documentation](https://docs.oracle.com/en/cloud/paas/base-database/available-metrics/index.html) describes this as memory **available** for starting applications, so it should not be interpreted as a verified percentage of memory used.
+
+Database storage values use each metric's latest available hourly numeric reading within the requested window, matched by the `resourceId_database` dimension to the database OCID. PDB metric streams are excluded; these totals are per database, rather than combined across the DB system. DATA and RECO utilization use the latest available 10-minute averages grouped by DB system and disk group. These percentages describe shared ASM storage across hosts and are not summed across hosts or combined between DATA and RECO. Provisioned storage capacity remains available separately in `data-storage-size-in-gbs` and `reco-storage-size-in-gb`.
 
 ### `report/limits/service_limits.csv`
 
@@ -551,6 +570,7 @@ The following mapping summarizes top-level `./oci-tenancy-review` commands and O
   - `oci db system get` (only when the list summary omits memory)
   - `oci db system list`
   - `oci db database list`
+  - `oci monitoring metric-data summarize-metrics-data` (best-effort Base Database CPU, memory, database storage, and ASM disk group telemetry)
 
 - `object-storage`, `object-storage-region`:
   - `oci search resource structured-search` (bucket resources)
